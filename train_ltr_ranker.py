@@ -54,6 +54,13 @@ SCORED_CHANNELS = [
 ]
 GOAL_CATEGORIES = list("ABCDEFGHIJK")
 SPECIFICITIES = ["LL", "LH", "HL", "HH"]
+QUERY_TOKEN_STOPWORDS = {
+    "about", "after", "again", "also", "another", "anything", "artist", "before",
+    "could", "find", "from", "give", "have", "heard", "like", "looking", "more",
+    "music", "play", "please", "recommend", "recommendation", "similar", "song",
+    "songs", "something", "some", "that", "the", "their", "this", "track", "tracks",
+    "want", "with", "would",
+}
 
 
 @dataclass
@@ -109,6 +116,57 @@ def metadata_matches(query: str, metadata: dict[str, Any], field: str) -> float:
 def release_year(value: Any) -> float:
     match = re.search(r"\d{4}", str(value))
     return (int(match.group()) - 1900) / 150.0 if match else 0.0
+
+
+def raw_release_year(value: Any) -> int | None:
+    match = re.search(r"\d{4}", str(value))
+    return int(match.group()) if match else None
+
+
+def query_tokens(query: str) -> set[str]:
+    return {
+        token
+        for token in normalize_text(query).split()
+        if len(token) >= 3 and token not in QUERY_TOKEN_STOPWORDS
+    }
+
+
+def contains_any(query: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in query for phrase in phrases)
+
+
+def query_year_constraints(query: str) -> tuple[set[int], set[int]]:
+    years = {
+        int(value)
+        for value in re.findall(r"\b(?:19|20)\d{2}\b", query)
+    }
+    decades = {
+        int(prefix) * 10
+        for prefix in re.findall(r"\b((?:19|20)\d)0s\b", query)
+    }
+    decades.update({
+        int(prefix) * 10
+        for prefix in re.findall(r"\b((?:19|20)\d)0 s\b", query)
+    })
+    return years, decades
+
+
+def tag_match_features(query: str, metadata: dict[str, Any]) -> tuple[float, float]:
+    tags = {
+        normalize_text(tag)
+        for tag in metadata.get("tag_list", [])
+        if len(normalize_text(tag)) >= 3
+    }
+    phrase_matches = sum(tag in query for tag in tags)
+    tag_tokens = {
+        token
+        for tag in tags
+        for token in tag.split()
+        if len(token) >= 3 and token not in QUERY_TOKEN_STOPWORDS
+    }
+    tokens = query_tokens(query)
+    overlap = len(tokens & tag_tokens) / max(1, len(tokens))
+    return min(phrase_matches, 5) / 5.0, overlap
 
 
 def build_tasks(
@@ -196,6 +254,19 @@ def feature_names() -> list[str]:
         "history_size",
         "user_track_cf_cosine",
         "user_track_cf_available",
+        "query_tag_phrase_match",
+        "query_tag_token_overlap",
+        "query_year_match",
+        "query_decade_match",
+        "query_year_proximity",
+        "same_artist_request_match",
+        "same_album_request_match",
+        "different_artist_request_match",
+        "instrumental_request_match",
+        "live_request_match",
+        "remix_request_match",
+        "popularity_request_alignment",
+        "era_request_alignment",
     ])
     names.extend(f"goal_category__{category}" for category in GOAL_CATEGORIES)
     names.extend(f"specificity__{specificity}" for specificity in SPECIFICITIES)
@@ -235,6 +306,36 @@ def build_candidate_feature_rows(
     last_artists = {str(value) for value in last_metadata.get("artist_id", [])}
     last_albums = {str(value) for value in last_metadata.get("album_id", [])}
     normalized_query = normalize_text(task.current_request)
+    requested_years, requested_decades = query_year_constraints(normalized_query)
+    same_artist_request = contains_any(normalized_query, (
+        "same artist", "same band", "same singer", "more by", "another by",
+        "from this artist", "from that artist", "by them",
+    ))
+    same_album_request = contains_any(normalized_query, (
+        "same album", "this album", "that album", "from the album", "on the album",
+        "another track from", "another song from",
+    ))
+    different_artist_request = contains_any(normalized_query, (
+        "different artist", "different band", "different singer", "someone else",
+        "other artist", "other band", "new artist",
+    ))
+    instrumental_request = "instrumental" in normalized_query or "no vocals" in normalized_query
+    live_request = contains_any(normalized_query, (" live ", "live version", "concert", "onstage"))
+    remix_request = contains_any(normalized_query, ("remix", "remixed", "mix version"))
+    popular_request = contains_any(normalized_query, (
+        "popular", "famous", "well known", "well-known", "hit song", "big hit",
+        "mainstream", "iconic",
+    ))
+    obscure_request = contains_any(normalized_query, (
+        "underrated", "obscure", "deep cut", "hidden gem", "lesser known",
+        "less-known", "not popular", "under the radar",
+    ))
+    recent_request = contains_any(normalized_query, (
+        "recent", "new release", "newer", "latest", "modern",
+    ))
+    old_request = contains_any(normalized_query, (
+        "classic", "older", "old school", "old-school", "vintage", "retro",
+    ))
     user_vector = user_cf.get(task.user_id)
 
     rows = []
@@ -249,12 +350,17 @@ def build_candidate_feature_rows(
 
         artists = {str(value) for value in metadata.get("artist_id", [])}
         albums = {str(value) for value in metadata.get("album_id", [])}
+        same_last_artist = float(bool(artists & last_artists))
+        same_any_artist = float(bool(artists & any_artists))
+        same_last_album = float(bool(albums & last_albums))
+        same_any_album = float(bool(albums & any_albums))
+        popularity = float(metadata.get("popularity") or 0) / 100.0
         row.extend([
-            float(bool(artists & last_artists)),
-            float(bool(artists & any_artists)),
-            float(bool(albums & last_albums)),
-            float(bool(albums & any_albums)),
-            float(metadata.get("popularity") or 0) / 100.0,
+            same_last_artist,
+            same_any_artist,
+            same_last_album,
+            same_any_album,
+            popularity,
             release_year(metadata.get("release_date")),
             metadata_matches(normalized_query, metadata, "track_name"),
             metadata_matches(normalized_query, metadata, "artist_name"),
@@ -275,6 +381,53 @@ def build_candidate_feature_rows(
             else 0.0
         )
         row.extend([cf_score, float(cf_available)])
+
+        tag_phrase_match, tag_token_overlap = tag_match_features(normalized_query, metadata)
+        year = raw_release_year(metadata.get("release_date"))
+        year_match = float(year in requested_years) if year is not None else 0.0
+        decade_match = float(
+            any(decade <= year <= decade + 9 for decade in requested_decades)
+        ) if year is not None else 0.0
+        year_proximity = (
+            max(0.0, 1.0 - min(abs(year - requested) for requested in requested_years) / 25.0)
+            if year is not None and requested_years
+            else 0.0
+        )
+        normalized_tags = " ".join(
+            normalize_text(tag)
+            for tag in metadata.get("tag_list", [])
+        )
+        title_and_tags = f"{normalize_text(metadata.get('track_name', []))} {normalized_tags}"
+        popularity_alignment = (
+            popularity if popular_request
+            else 1.0 - popularity if obscure_request
+            else 0.0
+        )
+        year_scale = (
+            min(1.0, max(0.0, (year - 1950) / 75.0))
+            if year is not None
+            else 0.0
+        )
+        era_alignment = (
+            year_scale if recent_request
+            else 1.0 - year_scale if old_request
+            else 0.0
+        )
+        row.extend([
+            tag_phrase_match,
+            tag_token_overlap,
+            year_match,
+            decade_match,
+            year_proximity,
+            float(same_artist_request) * same_any_artist,
+            float(same_album_request) * same_any_album,
+            float(different_artist_request) * (1.0 - same_any_artist),
+            float(instrumental_request) * float("instrumental" in title_and_tags),
+            float(live_request) * float("live" in title_and_tags),
+            float(remix_request) * float("remix" in title_and_tags),
+            popularity_alignment,
+            era_alignment,
+        ])
         row.extend(float(task.goal_category == category) for category in GOAL_CATEGORIES)
         row.extend(float(task.specificity == specificity) for specificity in SPECIFICITIES)
         if len(row) != len(names):

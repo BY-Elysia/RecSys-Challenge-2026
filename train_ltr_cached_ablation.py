@@ -53,6 +53,50 @@ VARIANTS = {
             "cf-bpr__mean",
         ],
     },
+    "no_request_constraints": {
+        "remove_prefixes": [
+            "query_tag_",
+            "query_year_",
+            "query_decade_",
+            "same_artist_request_",
+            "same_album_request_",
+            "different_artist_request_",
+            "instrumental_request_",
+            "live_request_",
+            "remix_request_",
+            "popularity_request_",
+            "era_request_",
+        ],
+        "remove_channels": [],
+    },
+    "no_tag_constraints": {
+        "remove_prefixes": ["query_tag_"],
+        "remove_channels": [],
+    },
+    "no_year_constraints": {
+        "remove_prefixes": ["query_year_", "query_decade_"],
+        "remove_channels": [],
+    },
+    "no_relation_constraints": {
+        "remove_prefixes": [
+            "same_artist_request_",
+            "same_album_request_",
+            "different_artist_request_",
+        ],
+        "remove_channels": [],
+    },
+    "no_version_constraints": {
+        "remove_prefixes": [
+            "instrumental_request_",
+            "live_request_",
+            "remix_request_",
+        ],
+        "remove_channels": [],
+    },
+    "no_preference_constraints": {
+        "remove_prefixes": ["popularity_request_", "era_request_"],
+        "remove_channels": [],
+    },
     "no_popularity_release": {
         "remove_prefixes": ["popularity", "release_year"],
         "remove_channels": [],
@@ -74,6 +118,77 @@ VARIANTS = {
             "user_track_cf_",
             "popularity",
             "release_year",
+        ],
+        "remove_channels": [
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+        ],
+    },
+    "champion_plus_constraints_no_tags": {
+        "remove_prefixes": [
+            "metadata-qwen3_embedding_0.6b__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "query_tag_",
+        ],
+        "remove_channels": [
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+        ],
+    },
+    "champion_plus_constraints_no_year": {
+        "remove_prefixes": [
+            "metadata-qwen3_embedding_0.6b__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "query_year_",
+            "query_decade_",
+        ],
+        "remove_channels": [
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+        ],
+    },
+    "champion_plus_constraints_no_relation": {
+        "remove_prefixes": [
+            "metadata-qwen3_embedding_0.6b__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "same_artist_request_",
+            "same_album_request_",
+            "different_artist_request_",
+        ],
+        "remove_channels": [
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+        ],
+    },
+    "champion_plus_constraints_no_version": {
+        "remove_prefixes": [
+            "metadata-qwen3_embedding_0.6b__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "instrumental_request_",
+            "live_request_",
+            "remix_request_",
+        ],
+        "remove_channels": [
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+        ],
+    },
+    "champion_plus_constraints_no_preference": {
+        "remove_prefixes": [
+            "metadata-qwen3_embedding_0.6b__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "popularity_request_",
+            "era_request_",
         ],
         "remove_channels": [
             "metadata-qwen3_embedding_0.6b__last",

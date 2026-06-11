@@ -71,6 +71,22 @@ ABLATION_GROUPS = {
         "prefixes": ["turn_number", "history_size", "goal_category__", "specificity__"],
         "retrieval_channels": [],
     },
+    "request_constraints": {
+        "prefixes": [
+            "query_tag_",
+            "query_year_",
+            "query_decade_",
+            "same_artist_request_",
+            "same_album_request_",
+            "different_artist_request_",
+            "instrumental_request_",
+            "live_request_",
+            "remix_request_",
+            "popularity_request_",
+            "era_request_",
+        ],
+        "retrieval_channels": [],
+    },
 }
 
 RETRIEVAL_CHANNELS = [
