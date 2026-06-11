@@ -1,156 +1,418 @@
-# Music Conversational Recommendation Challenge — Baselines
+# Music CRS Multi-Channel LambdaRank
 
-Official evaluation framework for the **The RecSys Challenge 2026 Conversational Music Recommendation System Challenge**. Music-CRS focuses on the evolving landscape of music discovery, where static recommendation lists are being replaced by dynamic, conversational interactions. As users increasingly interact with AI through natural language, there is a critical need for systems that can seamlessly integrate Natural Language Understanding (NLU) with high-precision Recommender Systems (RecSys). This challenge aims to push the boundaries of how AI understands nuanced user preferences, explores musical tastes through dialogue, and provides contextually relevant track recommendations.
+当前用于 RecSys Challenge 2026 Music CRS Blind A 的最佳模型流程：
 
-This repository provides standardized tools to evaluate music recommendation systems on the **TalkPlay Data Challenge** datasets. Participants must follow the strict inference JSON format specified below to ensure their submissions can be properly evaluated.
-
-- **ACM RecSys Website**: [https://www.recsyschallenge.com/](https://www.recsyschallenge.com/)
-- **Challenge Website**: [https://nlp4musa.github.io/music-crs-challenge/](https://nlp4musa.github.io/music-crs-challenge/)
-- **Challenge datasets**: [talkpl-ai/talkplay-data-challenge](https://huggingface.co/collections/talkpl-ai/talkplay-data-challenge)
-
-## Timeline
-
-| Date | Milestone |
-|------|-----------|
-| 31 March 2026 | Website online |
-| 10 April 2026 | Start RecSys Challenge — Release dataset (Train, Development, Blind A) |
-| 15 April 2026 | Submission System Open — Leaderboard live (with Blind A dataset) |
-| 15 June 2026 | Blind Dataset B released, Activate submission system for Blind B dataset |
-| 30 June 2026 | End RecSys Challenge |
-| 6 July 2026 | Final Leaderboard & Winners — EasyChair open for submissions |
-| 9 July 2026 | Upload code of the final predictions |
-| 20 July 2026 | Paper Submission Due |
-| 3 August 2026 | Paper Acceptance Notifications |
-| 10 August 2026 | Camera-Ready Papers |
-| September 2026 | RecSys Challenge Workshop at ACM RecSys 2026 |
-
----
-
-## Baseline System
-
-The system operates on a **two-stage pipeline**:
-1. **RecSys** — Retrieve candidate tracks matching user preferences
-2. **LLM** — Generate a natural language response explaining the recommendations
-
-### Core Components
-
-| Component | Description | Module |
-|---|---|---|
-| LLM | Generates natural language responses (Llama-3.2-1B-Instruct) | `mcrs/lm_modules/` |
-| RecSys | Retrieves relevant tracks via BM25 (sparse) or BERT (dense) | `mcrs/retrieval_modules/` |
-| User DB | Stores user profiles (user_id, age, gender, country) | `mcrs/db_user/user_profile.py` |
-| Item DB | Contains track metadata (name, artist, album, tags, release date) | `mcrs/db_item/music_catalog.py` |
-
----
-
-## Challenge Resources
-
-- **Dataset collection**: [TalkPlayData-Challenge](https://huggingface.co/collections/talkpl-ai/talkplay-data-challenge)
-- **Conversation Dataset**: [TalkPlayData-Challenge-Dataset](https://huggingface.co/datasets/talkpl-ai/TalkPlayData-Challenge-Dataset)
-- **Track Metadata**: [TalkPlayData-Challenge-Track-Metadata](https://huggingface.co/datasets/talkpl-ai/TalkPlayData-Challenge-Track-Metadata)
-- **User Profiles**: [TalkPlayData-Challenge-User-Metadata](https://huggingface.co/datasets/talkpl-ai/TalkPlayData-Challenge-User-Metadata)
-- **Blind A Dataset**: [TalkPlayData-Challenge-Blind-A](https://huggingface.co/datasets/talkpl-ai/TalkPlayData-Challenge-Blind-A)
-- **Blind B Dataset**: Will be uploaded @ 15 Jun
-
----
-
-## Quick Start
-
-### Installation
-
-```bash
-uv venv .venv --python=3.10
-source .venv/bin/activate
-uv pip install -e .
-uv pip install flash-attn --no-build-isolation # for fast llm inference
+```text
+对话历史与用户信息
+  -> legacy BM25 + feedback-rich BM25
+  -> 历史歌曲同歌手/同专辑结构召回
+  -> image SigLIP2 最后一首/历史均值相似召回
+  -> 合并候选并构造 36 维特征
+  -> LightGBM LambdaRank 融合排序
+  -> 选取前 20 个歌曲 ID
+  -> Turn1 seed13 后排融合，Top1 与回复锁定
+  -> 豆包生成/复用自然语言回复
 ```
 
-### Run Inference on the Development Set
+当前 Blind A 最佳分数：
 
-**⚠️ Note: During inference, the recommender system must always retrieve candidates from the entire track catalog. Do not filter, subset, or restrict tracks using `track_split_types` or any other mechanism!**
-
-For BM25/BERT baselines, your config must include:
-
-```yaml
-track_split_types:
-  - "all_tracks"
+```text
+ndcg@20             0.5566
+catalog_diversity   0.0307
+lexical_diversity   0.7465
+llm_judge_score     4.7500
+composite_score     0.6373
 ```
 
-If you do not use `all_tracks`, your evaluation may be considered invalid.
+当前冠军锁定 Top1 与回复，仅使用 Turn1 seed13 模型调整部分 Top2-20。进一步使用
+v3 调整 Top2-20 会使 `nDCG@20` 降至 `0.5518`，仅调整 Top6-20 则与冠军完全同分。
+因此 v3/seed 融合路线已经停止，下一阶段转向增加文本语义召回与 CF 召回等互补信号。
 
-- Always use `all_tracks` for every experiment and submission.
-- Do **not** preprocess, filter, or use only a subset of tracks during inference.
+完整分数历史、失败方向、保留产物和复现记录见
+[EXPERIMENTS.md](EXPERIMENTS.md)。
 
+当前冠军模型保留的核心信号：
 
-```bash
-# BM25 baseline
-python run_inference_devset.py --tid llama1b_bm25_devset --batch_size 16
-
-# BERT baseline
-python run_inference_devset.py --tid llama1b_bert_devset --batch_size 16
+```text
+1. 两套 BM25 Query 的候选 rank
+2. 历史歌曲同歌手和同专辑关系
+3. image SigLIP2 歌曲续推相似度
+4. 当前请求对歌名、歌手、专辑的显式匹配
+5. turn、历史长度、goal category 和 specificity
 ```
 
-Results are saved to `exp/inference/{tid}.json`.
+## 环境配置
 
-### Run Inference on Blind Sets (for submission)
+Windows PowerShell：
 
-```bash
-# BM25 baseline
-python run_inference_blindset.py --tid llama1b_bm25_blindset_A --batch_size 16
-
-# BERT baseline
-python run_inference_blindset.py --tid llama1b_bert_blindset_A --batch_size 16
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
 
----
+训练和推理需要安装支持 CUDA 的 PyTorch。建议始终显式使用
+`.\.venv\Scripts\python.exe`，避免误调用系统 Python 中的 CPU 版 PyTorch。
 
-## Custom Configuration
+生成回复前，设置豆包 API 环境变量：
 
-Create a config file in `config/`:
-
-```yaml
-# config/my_model.yaml
-lm_type: "Qwen/Qwen3-4B" # change llama to qwen3
-retrieval_type: "bm25"
-test_dataset_name: "talkpl-ai/TalkPlayData-Challenge-Dataset"
-item_db_name: "talkpl-ai/TalkPlayData-Challenge-Track-Metadata"
-user_db_name: "talkpl-ai/TalkPlayData-Challenge-User-Metadata"
-track_split_types:
-  - "all_tracks"
-user_split_types:
-  - "all_users"
-corpus_types:
-  - "track_name"
-  - "artist_name"
-  - "album_name"
-  - "release_date"
-cache_dir: "./cache"
-device: "cuda"
-attn_implementation: "flash_attention_2"
+```powershell
+$env:DOUBAO_API_KEY = "你的 API Key"
+$env:DOUBAO_REASONING_EFFORT = "minimal"
+$env:DOUBAO_TEMPERATURE = "0.50"
+$env:DOUBAO_MAX_TOKENS = "140"
+$env:DOUBAO_CONCURRENCY = "4"
 ```
 
-Then run with your config:
+## 运行当前最佳 Blind A 排序
 
-```bash
-python run_inference_devset.py --tid my_model
+```powershell
+.\.venv\Scripts\python.exe run_inference_ltr_blindset.py `
+  --model_path exp/ltr/cached_ablation_10k_top100/no_metadata_cf_popularity/model.txt `
+  --turn1_model_path exp/ltr/lean_30k_top100_seed13/no_metadata_cf_popularity/model.txt `
+  --output_name multichannel_ltr_turn1_s13_later_v2_empty `
+  --channel_topk 100 `
+  --history_turns 0 `
+  --device cuda
 ```
 
----
+将 Top1 与回复锁回上一版冠军，只保留 Turn1 的后排排序变化：
 
-## Evaluation
+```powershell
+.\.venv\Scripts\python.exe merge_locked_top1_prediction.py `
+  --base_path exp/inference/blindset_A/multichannel_ltr_lean_v2_prediction.json `
+  --candidate_path exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_empty.json `
+  --output_path exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_top1lock_prediction.json
+```
 
-For evaluation, please refer to: https://github.com/nlp4musa/music-crs-evaluator
+上一版 v2 排序可用以下命令复现：
 
----
+```powershell
+.\.venv\Scripts\python.exe run_inference_ltr_blindset.py `
+  --model_path exp/ltr/cached_ablation_10k_top100/no_metadata_cf_popularity/model.txt `
+  --output_name multichannel_ltr_lean_v2_empty `
+  --channel_topk 100 `
+  --history_turns 0 `
+  --device cuda
+```
 
-## Tips & Extensions
+## 生成 v2 回复
 
-See `./tips/` for advanced techniques. Some directions to explore:
+```powershell
+.\.venv\Scripts\python.exe regenerate_responses_blindset.py `
+  --tid bm25_tags_doubao_blindset_A `
+  --input_path exp/inference/blindset_A/multichannel_ltr_lean_v2_empty.json `
+  --output_path exp/inference/blindset_A/multichannel_ltr_lean_v2_prediction.json
+```
 
-- **Improve Item Representation** — Add audio features or use stronger embedding models
-- **Add a Reranker Module** — Implement two-stage ranking with LLM or embedding-based rerankers
-- **Generative Retrieval** — Use semantic IDs for end-to-end track generation
+## 打包当前最佳提交
 
----
+```powershell
+.\.venv\Scripts\python.exe -c "import zipfile,pathlib; d=pathlib.Path('exp/inference/blindset_A'); dst=d/'multichannel_ltr_turn1_s13_later_v2_top1lock_submission.zip'; dst.unlink(missing_ok=True); z=zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED); z.write(d/'multichannel_ltr_turn1_s13_later_v2_top1lock_prediction.json','prediction.json'); z.close(); print(dst.resolve())"
+```
 
-Good luck with the challenge!
+## 旧版 MiniLM 实验
+
+以下内容用于复现早期 BM25 + MiniLM 路线，已不再是当前最佳主线。
+
+### 从头训练 Reranker
+
+```powershell
+.\.venv\Scripts\python.exe train_reranker.py `
+  --model_name cross-encoder/ms-marco-MiniLM-L6-v2 `
+  --output_dir ./exp/reranker/minilm_bm25_listwise_focused `
+  --retrieval_topk 200 `
+  --negatives_per_positive 19 `
+  --max_turns 50000 `
+  --epochs 3 `
+  --batch_size 2 `
+  --gradient_accumulation_steps 8 `
+  --max_length 384 `
+  --learning_rate 1e-5 `
+  --retrieval_query_mode legacy `
+  --reranker_query_mode focused `
+  --history_turns 3 `
+  --device cuda
+```
+
+训练过程中会根据验证集最高的 `ndcg@20` 保存最佳 checkpoint。
+
+### 运行旧版 Blind A 推理
+
+使用早期保留的 MiniLM 对照模型：
+
+```powershell
+.\.venv\Scripts\python.exe run_inference_rerank_blindset.py `
+  --tid bm25_tags_doubao_blindset_A `
+  --reranker_dir ./exp/reranker/minilm_bm25_tags_top400_e1 `
+  --output_name tags_top400_e1_empty `
+  --candidate_topk 400 `
+  --rerank_batch_size 64 `
+  --max_length 384 `
+  --retrieval_query_mode legacy `
+  --reranker_query_mode focused `
+  --history_turns 3 `
+  --response_mode empty `
+  --device cuda
+```
+
+输出文件：
+
+```text
+exp/inference/blindset_A/tags_top400_e1_empty.json
+```
+
+### 旧版结果仅重新生成回复
+
+该命令会保留全部 `predicted_track_ids`，仅重写 `predicted_response`：
+
+```powershell
+.\.venv\Scripts\python.exe regenerate_responses_blindset.py `
+  --tid bm25_tags_doubao_blindset_A `
+  --input_path exp/inference/blindset_A/tags_top400_e1_empty.json `
+  --output_path exp/inference/blindset_A/tags_top400_e1_prediction.json
+```
+
+### 打包旧版提交文件
+
+```powershell
+.\.venv\Scripts\python.exe -c "import zipfile,pathlib; d=pathlib.Path('exp/inference/blindset_A'); dst=d/'tags_top400_e1_submission.zip'; dst.unlink(missing_ok=True); z=zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED); z.write(d/'tags_top400_e1_prediction.json','prediction.json'); z.close(); print(dst.resolve())"
+```
+
+校验提交文件：
+
+```powershell
+.\.venv\Scripts\python.exe -c "import json,zipfile; z=zipfile.ZipFile('exp/inference/blindset_A/tags_top400_e1_submission.zip'); d=json.loads(z.read('prediction.json').decode('utf-8')); print(z.namelist(),len(d),sorted(set(len(x['predicted_track_ids']) for x in d)))"
+```
+
+预期输出：
+
+```text
+['prediction.json'] 80 [20]
+```
+
+官方格式要求每条预测最多 20 首歌曲。Blind A 只有 80 条预测、曲库共有
+47,071 首，因此合规的 `catalog_diversity` 理论上限仅为
+`1600 / 47071 = 0.033991`。不要通过在 Top-20 后附加额外歌曲提高该指标；
+公开 evaluator 的 nDCG 会截断到 20，但 diversity 会统计整条列表，这属于
+评测实现缺口，并违反官方提交格式。
+
+检查当前提交的合法覆盖率与多样化风险：
+
+```powershell
+.\.venv\Scripts\python.exe analyze_catalog_diversity.py `
+  exp/inference/blindset_A/multichannel_ltr_lean_v2_prediction.json
+```
+
+### 标签召回实验
+
+该历史实验使用 `tag_list` BM25 Top-400，并基于新候选继续训练 MiniLM
+Reranker。先运行完整 Dev 召回评估：
+
+```powershell
+.\.venv\Scripts\python.exe evaluate_devset.py `
+  --tid bm25_tags_doubao_blindset_A `
+  --candidate_topk 400 `
+  --output_path exp/evaluation/dev_tags_top400_retrieval.json
+```
+
+继续训练一轮：
+
+```powershell
+.\.venv\Scripts\python.exe train_reranker.py `
+  --model_name ./exp/reranker/minilm_bm25_listwise_focused_continue_e2 `
+  --output_dir ./exp/reranker/minilm_bm25_tags_top400_e1 `
+  --corpus_types track_name artist_name album_name release_date tag_list `
+  --retrieval_topk 400 `
+  --negatives_per_positive 19 `
+  --max_turns 50000 `
+  --epochs 1 `
+  --batch_size 2 `
+  --gradient_accumulation_steps 8 `
+  --max_length 384 `
+  --learning_rate 2e-6 `
+  --retrieval_query_mode legacy `
+  --reranker_query_mode focused `
+  --history_turns 3 `
+  --seed 13 `
+  --device cuda
+```
+
+训练后用官方 Dev 的完整候选池评估：
+
+```powershell
+.\.venv\Scripts\python.exe evaluate_devset.py `
+  --tid bm25_tags_doubao_blindset_A `
+  --reranker_dir ./exp/reranker/minilm_bm25_tags_top400_e1 `
+  --candidate_topk 400 `
+  --rerank_batch_size 64 `
+  --output_path exp/evaluation/dev_tags_top400_retrained.json `
+  --device cuda
+```
+
+详细实验依据、候选召回率和对照方案见 [EXPERIMENTS.md](EXPERIMENTS.md)。
+
+Dev 指标通过后运行 Blind A 排序推理：
+
+```powershell
+.\.venv\Scripts\python.exe run_inference_rerank_blindset.py `
+  --tid bm25_tags_doubao_blindset_A `
+  --reranker_dir ./exp/reranker/minilm_bm25_tags_top400_e1 `
+  --output_name tags_top400_e1_empty `
+  --candidate_topk 400 `
+  --rerank_batch_size 64 `
+  --max_length 384 `
+  --retrieval_query_mode legacy `
+  --reranker_query_mode focused `
+  --history_turns 3 `
+  --response_mode empty `
+  --device cuda
+```
+
+## 困难负例训练
+
+先使用当前最佳模型从每条训练样本前 100 个清洗候选中缓存 12 个高分错误歌曲：
+
+```powershell
+.\.venv\Scripts\python.exe mine_hard_negatives.py `
+  --model_name ./exp/reranker/minilm_bm25_tags_top400_e1 `
+  --output_path ./exp/hard_negatives/tags_top400_e1_pool100.jsonl `
+  --candidate_pool_size 100 `
+  --hard_negatives_per_positive 12 `
+  --max_turns 50000 `
+  --device cuda
+```
+
+再使用 12 个困难负例和 7 个普通 BM25 负例继续训练一轮：
+
+```powershell
+.\.venv\Scripts\python.exe train_reranker.py `
+  --model_name ./exp/reranker/minilm_bm25_tags_top400_e1 `
+  --output_dir ./exp/reranker/minilm_bm25_tags_top400_hardneg_e1 `
+  --corpus_types track_name artist_name album_name release_date tag_list `
+  --retrieval_topk 400 `
+  --negatives_per_positive 19 `
+  --hard_negative_cache ./exp/hard_negatives/tags_top400_e1_pool100.jsonl `
+  --hard_negatives_per_positive 12 `
+  --require_hard_negative_cache_hit `
+  --max_turns 50000 `
+  --epochs 1 `
+  --batch_size 2 `
+  --gradient_accumulation_steps 8 `
+  --max_length 384 `
+  --learning_rate 1e-6 `
+  --retrieval_query_mode legacy `
+  --reranker_query_mode focused `
+  --history_turns 3 `
+  --seed 13 `
+  --device cuda
+```
+
+## 语义向量补召回
+
+项目包含一条实验性语义召回路线：标签 BM25 Top-400 保持为主通道，使用官方
+Qwen3 metadata 向量补充 BM25 漏掉的歌曲，再由当前最佳 reranker 排序。
+
+首次运行会下载 `Qwen/Qwen3-Embedding-0.6B`，并缓存官方曲库向量。先用
+100 个 Dev 会话验证候选召回：
+
+```powershell
+.\.venv\Scripts\python.exe evaluate_hybrid_recall_devset.py `
+  --max_sessions 100 `
+  --bm25_topk 400 `
+  --dense_topk 100 `
+  --dense_batch_size 16 `
+  --output_path exp/evaluation/dev_hybrid_recall_100sessions_dense100.json `
+  --device cuda
+```
+
+评估通道惩罚后的最终排序：
+
+```powershell
+.\.venv\Scripts\python.exe evaluate_hybrid_devset.py `
+  --max_sessions 100 `
+  --bm25_topk 400 `
+  --dense_topk 100 `
+  --dense_penalties 0 0.25 0.5 0.75 1.0 1.5 2.0 `
+  --dense_batch_size 16 `
+  --rerank_batch_size 64 `
+  --output_path exp/evaluation/dev_hybrid_dense100_penalty_scan_100sessions.json `
+  --device cuda
+```
+
+当前抽样 Dev 最优参数为 `dense_topk=100`、`dense_penalty=2.0`，但
+`nDCG@20` 仅从 `0.126738` 提升到 `0.127228`，尚未达到替换当前最佳主线的
+门槛。生成该实验路线的 Blind A 空回复排序文件：
+
+```powershell
+.\.venv\Scripts\python.exe run_inference_hybrid_dense_blindset.py `
+  --reranker_dir ./exp/reranker/minilm_bm25_tags_top400_e1 `
+  --bm25_topk 400 `
+  --dense_topk 100 `
+  --dense_penalty 2.0 `
+  --output_name tags_top400_dense100_penalty2_empty_blindset_A `
+  --device cuda
+```
+
+## 混合候选训练
+
+让 reranker 适配 Dense 独有候选时，先缓存训练集 Dense Top-100：
+
+```powershell
+.\.venv\Scripts\python.exe cache_dense_candidates.py `
+  --output_path ./exp/dense_candidates/train_dense_top100_focused_50k.jsonl `
+  --dense_topk 100 `
+  --max_turns 50000 `
+  --write_batch_size 1024 `
+  --dense_batch_size 16 `
+  --device cuda
+```
+
+再从当前最佳模型继续训练。每组使用 4 个 Dense 独有负例和 15 个 BM25 负例：
+
+```powershell
+.\.venv\Scripts\python.exe train_reranker.py `
+  --model_name ./exp/reranker/minilm_bm25_tags_top400_e1 `
+  --output_dir ./exp/reranker/minilm_tags_top400_dense100_mix4_e1 `
+  --corpus_types track_name artist_name album_name release_date tag_list `
+  --retrieval_topk 400 `
+  --negatives_per_positive 19 `
+  --dense_candidate_cache ./exp/dense_candidates/train_dense_top100_focused_50k.jsonl `
+  --dense_candidate_pool_size 100 `
+  --dense_negatives_per_positive 4 `
+  --require_dense_candidate_cache_hit `
+  --max_turns 50000 `
+  --epochs 1 `
+  --batch_size 2 `
+  --gradient_accumulation_steps 8 `
+  --max_length 384 `
+  --learning_rate 5e-7 `
+  --retrieval_query_mode legacy `
+  --reranker_query_mode focused `
+  --history_turns 3 `
+  --seed 13 `
+  --device cuda
+```
+
+该模型在固定 100 个 Dev 会话上，使用 Dense Top-100 和 `dense_penalty=2.0`
+时，`nDCG@20` 从旧主线的 `0.126738` 提升到 `0.128802`，但仍未达到
+`+0.005` 的正式替换门槛。详细统计见 [EXPERIMENTS.md](EXPERIMENTS.md)。
+
+正式 Blind A 评测中，该 Hybrid 方案的 `ndcg@20` 为 `0.1806`，低于纯
+BM25 排序主线的 `0.1946`；`composite_score=0.4559` 的新高主要来自回复评分。
+因此 Dense Hybrid 暂不进入排序主线。已生成“混合训练模型 + 纯 BM25
+Top-400”对照排序文件：
+
+```text
+exp/inference/blindset_A/tags_top400_dense_mix4_bm25only_empty.json
+exp/inference/blindset_A/tags_top400_dense_mix4_bm25only_prediction.json
+exp/inference/blindset_A/tags_top400_dense_mix4_bm25only_submission.zip
+```
+
+该对照与 Dense Hybrid 提交的 80 条 Top-1 推荐全部相同，因此复用了完全相同
+的回复文本，下一次评测可以直接衡量去除 Dense 候选后的排序变化。
+
+正式评测中，纯 BM25 对照与 Dense Hybrid 的五项分数在日志显示精度下完全
+一致，`ndcg@20` 均为 `0.1806`。因此排序退化主要来自混合负例继续训练，
+而不是 Dense 候选本身。该路线停止，后续实验继续以
+`minilm_bm25_tags_top400_e1` 为主线起点。

@@ -4,3 +4,12 @@ __pycache__/
 *.egg-info/
 uv.lock
 inference/
+.env
+.env.*
+!.env.example
+exp/
+*.log
+*.safetensors
+*.pt
+*.pth
+*.bin

@@ -2,7 +2,7 @@ import torch
 from .crs_baseline import CRS_BASELINE
 
 def load_crs_baseline(
-    lm_type="meta-llama/Llama-3.2-1B-Instruct",
+    lm_type="doubao_api",
     retrieval_type="bm25",
     item_db_name: str = "talkpl-ai/TalkPlayData-Challenge-Track-Metadata",
     user_db_name: str = "talkpl-ai/TalkPlayData-Challenge-User-Metadata",

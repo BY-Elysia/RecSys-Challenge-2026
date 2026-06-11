@@ -28,7 +28,7 @@ class CRS_BASELINE:
         session_memory: In-memory list of message dicts for the current session.
     """
     def __init__(self,
-        lm_type="meta-llama/Llama-3.2-1B-Instruct",
+        lm_type="doubao_api",
         retrieval_type="bm25",
         item_db_name: str = "talkpl-ai/TalkPlayData-Challenge-Track-Metadata",
         user_db_name: str = "talkpl-ai/TalkPlayData-Challenge-User-Metadata",

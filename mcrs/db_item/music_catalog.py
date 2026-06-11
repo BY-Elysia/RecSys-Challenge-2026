@@ -19,6 +19,9 @@ class MusicCatalogDB:
         track_id = metadata['track_id']
         entity_str = f"track_id: {track_id}"
         for corpus_type in self.corpus_types:
-            corpus_type_value = ", ".join(metadata[corpus_type]).lower()
+            corpus_type_value = metadata[corpus_type]
+            if isinstance(corpus_type_value, list):
+                corpus_type_value = ", ".join(corpus_type_value)
+            corpus_type_value = str(corpus_type_value).lower()
             entity_str += f", {corpus_type}: {corpus_type_value}"
         return entity_str
