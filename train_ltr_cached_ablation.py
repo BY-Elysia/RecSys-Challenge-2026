@@ -28,6 +28,31 @@ VARIANTS = {
         "remove_prefixes": ["user_track_cf_"],
         "remove_channels": [],
     },
+    "no_query_dense": {
+        "remove_prefixes": ["query-qwen3__"],
+        "remove_channels": ["query-qwen3"],
+    },
+    "no_cf_retrieval": {
+        "remove_prefixes": ["user-cf__", "cf-bpr__"],
+        "remove_channels": ["user-cf", "cf-bpr__last", "cf-bpr__mean"],
+    },
+    "no_user_cf_retrieval": {
+        "remove_prefixes": ["user-cf__"],
+        "remove_channels": ["user-cf"],
+    },
+    "no_history_cf_retrieval": {
+        "remove_prefixes": ["cf-bpr__"],
+        "remove_channels": ["cf-bpr__last", "cf-bpr__mean"],
+    },
+    "no_new_retrieval": {
+        "remove_prefixes": ["query-qwen3__", "user-cf__", "cf-bpr__"],
+        "remove_channels": [
+            "query-qwen3",
+            "user-cf",
+            "cf-bpr__last",
+            "cf-bpr__mean",
+        ],
+    },
     "no_popularity_release": {
         "remove_prefixes": ["popularity", "release_year"],
         "remove_channels": [],
@@ -55,6 +80,20 @@ VARIANTS = {
             "metadata-qwen3_embedding_0.6b__mean",
         ],
     },
+    "lean_history_cf": {
+        "remove_prefixes": [
+            "metadata-qwen3_embedding_0.6b__",
+            "user_track_cf_",
+            "user-cf__",
+            "popularity",
+            "release_year",
+        ],
+        "remove_channels": [
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+            "user-cf",
+        ],
+    },
 }
 
 
@@ -75,9 +114,14 @@ def active_rows_for_channels(
 ) -> np.ndarray:
     if not remove_channels:
         return np.ones(len(dataset.labels), dtype=bool)
+    available_channels = [
+        name.removesuffix("__present")
+        for name in dataset.feature_names
+        if name.endswith("__present")
+    ]
     remaining_channels = [
         channel
-        for channel in RETRIEVAL_CHANNELS
+        for channel in available_channels
         if channel not in remove_channels
     ]
     present_columns = [

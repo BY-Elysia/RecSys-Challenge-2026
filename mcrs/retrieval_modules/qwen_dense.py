@@ -173,22 +173,35 @@ class QwenDenseRetriever:
             return F.normalize(embeddings, p=2, dim=1)
 
     def batch_text_to_item_retrieval(self, queries: list[str], topk: int) -> list[list[str]]:
+        ids, _ = self.batch_text_to_item_retrieval_with_scores(queries, topk)
+        return ids
+
+    def batch_text_to_item_retrieval_with_scores(
+        self,
+        queries: list[str],
+        topk: int,
+    ) -> tuple[list[list[str]], list[list[float]]]:
         if topk <= 0:
-            return [[] for _ in queries]
+            return ([[] for _ in queries], [[] for _ in queries])
         self._load_corpus_tensor()
         topk = min(topk, len(self.track_ids))
 
         results: list[list[str]] = []
+        all_scores: list[list[float]] = []
         for start in tqdm(
             range(0, len(queries), self.query_batch_size),
             desc="Dense query retrieval",
         ):
             query_embeddings = self.encode_queries(queries[start:start + self.query_batch_size])
             with torch.inference_mode():
-                indices = torch.topk(query_embeddings @ self.corpus_tensor.T, k=topk, dim=1).indices
-            for row in indices.detach().cpu().tolist():
+                scores, indices = torch.topk(query_embeddings @ self.corpus_tensor.T, k=topk, dim=1)
+            for row, row_scores in zip(
+                indices.detach().cpu().tolist(),
+                scores.detach().cpu().float().tolist(),
+            ):
                 results.append([self.track_ids[index] for index in row])
-        return results
+                all_scores.append(row_scores)
+        return results, all_scores
 
     def unload(self) -> None:
         self.model = None

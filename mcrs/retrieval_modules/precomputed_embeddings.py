@@ -184,6 +184,76 @@ class PrecomputedTrackEmbeddingIndex:
                 all_scores.append([score for _, score in pairs])
         return all_ids, all_scores
 
+    def batch_vector_retrieval(
+        self,
+        query_vectors: list[np.ndarray | None],
+        topk: int,
+        batch_size: int = 32,
+        exclude_track_ids: list[list[str]] | None = None,
+    ) -> tuple[list[list[str]], list[list[float]]]:
+        """Retrieve nearest tracks for arbitrary vectors in the embedding space."""
+        if topk <= 0:
+            return ([[] for _ in query_vectors], [[] for _ in query_vectors])
+        if exclude_track_ids is None:
+            exclude_track_ids = [[] for _ in query_vectors]
+        if len(exclude_track_ids) != len(query_vectors):
+            raise ValueError("exclude_track_ids must align with query_vectors.")
+
+        self._load_tensors()
+        topk = min(topk, len(self.track_ids))
+        dtype = self.corpus_tensor.dtype
+        dimension = self.embeddings.shape[1]
+        all_ids: list[list[str]] = []
+        all_scores: list[list[float]] = []
+
+        for start in tqdm(
+            range(0, len(query_vectors), batch_size),
+            desc=f"{self.embedding_field} vectors",
+        ):
+            batch_vectors = query_vectors[start:start + batch_size]
+            batch_excluded = exclude_track_ids[start:start + batch_size]
+            normalized = []
+            available = []
+            for vector in batch_vectors:
+                array = np.asarray(vector, dtype=np.float32) if vector is not None else np.empty(0)
+                norm = float(np.linalg.norm(array)) if array.size == dimension else 0.0
+                available.append(bool(norm))
+                normalized.append(
+                    array / norm if norm else np.zeros(dimension, dtype=np.float32)
+                )
+
+            query_tensor = torch.from_numpy(np.stack(normalized)).to(self.device, dtype=dtype)
+            with torch.inference_mode():
+                similarities = query_tensor @ self.corpus_tensor.T
+                similarities[:, ~self.valid_tensor] = -torch.inf
+                for row, track_ids in enumerate(batch_excluded):
+                    indices = [
+                        self.track_to_index[track_id]
+                        for track_id in track_ids
+                        if track_id in self.track_to_index
+                    ]
+                    if indices:
+                        similarities[row, indices] = -torch.inf
+                values, indices = torch.topk(similarities, k=topk, dim=1)
+
+            for is_available, row_indices, row_values in zip(
+                available,
+                indices.detach().cpu().tolist(),
+                values.detach().cpu().float().tolist(),
+            ):
+                if not is_available:
+                    all_ids.append([])
+                    all_scores.append([])
+                    continue
+                pairs = [
+                    (self.track_ids[index], score)
+                    for index, score in zip(row_indices, row_values)
+                    if np.isfinite(score)
+                ]
+                all_ids.append([track_id for track_id, _ in pairs])
+                all_scores.append([score for _, score in pairs])
+        return all_ids, all_scores
+
     def unload(self) -> None:
         self.corpus_tensor = None
         self.valid_tensor = None

@@ -20,18 +20,8 @@ from train_ltr_ranker import (
     build_inference_feature_dataset,
     load_user_cf_embeddings,
 )
+from mcrs.retrieval_modules.qwen_dense import DEFAULT_TASK_INSTRUCTION
 from train_reranker import build_query_text, track_to_text
-
-
-RETRIEVAL_CHANNELS = [
-    "bm25_legacy",
-    "bm25_feedback",
-    "structure",
-    "image-siglip2__last",
-    "image-siglip2__mean",
-    "metadata-qwen3_embedding_0.6b__last",
-    "metadata-qwen3_embedding_0.6b__mean",
-]
 
 
 def load_removed_channels(model_path: str) -> list[str]:
@@ -59,11 +49,12 @@ def prepare_model_inputs(
         inference.feature_names.index(name)
         for name in model_feature_names
     ]
-    remaining_channels = [
-        channel
-        for channel in RETRIEVAL_CHANNELS
-        if channel not in removed_channels
+    model_channels = [
+        name.removesuffix("__present")
+        for name in model_feature_names
+        if name.endswith("__present")
     ]
+    remaining_channels = [channel for channel in model_channels if channel not in removed_channels]
     present_indices = [
         inference.feature_names.index(f"{channel}__present")
         for channel in remaining_channels
@@ -275,6 +266,24 @@ if __name__ == "__main__":
     parser.add_argument("--channel_topk", type=int, default=100)
     parser.add_argument("--embedding_batch_size", type=int, default=32)
     parser.add_argument("--text_retrieval_batch_size", type=int, default=5000)
+    parser.add_argument(
+        "--enable_query_dense",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--enable_cf_retrieval",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--query_dense_embedding_field",
+        default="metadata-qwen3_embedding_0.6b",
+    )
+    parser.add_argument("--query_dense_model_name", default="Qwen/Qwen3-Embedding-0.6B")
+    parser.add_argument("--query_dense_max_length", type=int, default=512)
+    parser.add_argument("--query_dense_batch_size", type=int, default=16)
+    parser.add_argument("--query_dense_instruction", default=DEFAULT_TASK_INSTRUCTION)
     parser.add_argument("--history_turns", type=int, default=0)
     parser.add_argument("--rrf_k", type=int, default=60)
     parser.add_argument("--topk", type=int, default=20)

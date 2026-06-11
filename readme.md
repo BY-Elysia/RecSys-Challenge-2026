@@ -28,6 +28,10 @@ composite_score     0.6373
 v3 调整 Top2-20 会使 `nDCG@20` 降至 `0.5518`，仅调整 Top6-20 则与冠军完全同分。
 因此 v3/seed 融合路线已经停止，下一阶段转向增加文本语义召回与 CF 召回等互补信号。
 
+最新研究候选已增加用户 CF 直接召回和历史歌曲 CF 相似召回。该模型在完整 Dev 上将
+Blind 轮次加权 `nDCG@20` 从 `0.1918` 提升到 `0.2269`，但尚未获得 Blind A
+官方分数，因此当前正式冠军仍保持不变。
+
 完整分数历史、失败方向、保留产物和复现记录见
 [EXPERIMENTS.md](EXPERIMENTS.md)。
 
@@ -109,6 +113,59 @@ $env:DOUBAO_CONCURRENCY = "4"
 
 ```powershell
 .\.venv\Scripts\python.exe -c "import zipfile,pathlib; d=pathlib.Path('exp/inference/blindset_A'); dst=d/'multichannel_ltr_turn1_s13_later_v2_top1lock_submission.zip'; dst.unlink(missing_ok=True); z=zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED); z.write(d/'multichannel_ltr_turn1_s13_later_v2_top1lock_prediction.json','prediction.json'); z.close(); print(dst.resolve())"
+```
+
+## CF 召回增强实验
+
+构建 10k 训练与完整 Dev 特征缓存：
+
+```powershell
+.\.venv\Scripts\python.exe train_ltr_ranker.py `
+  --train_feature_cache_dir cache/ltr/train10k_seed13_top100_cf_v2 `
+  --dev_feature_cache_dir cache/ltr/dev_all_top100_cf_v2 `
+  --cache_only `
+  --max_train_tasks 10000 `
+  --train_turn_mode all `
+  --dev_turn_mode all `
+  --channel_topk 100 `
+  --history_turns 0 `
+  --enable_cf_retrieval `
+  --no-enable_query_dense `
+  --embedding_batch_size 64 `
+  --text_retrieval_batch_size 500 `
+  --seed 13 `
+  --device cuda
+```
+
+训练与消融：
+
+```powershell
+.\.venv\Scripts\python.exe train_ltr_cached_ablation.py `
+  --train_feature_cache_dir cache/ltr/train10k_seed13_top100_cf_v2 `
+  --dev_feature_cache_dir cache/ltr/dev_all_top100_cf_v2 `
+  --output_dir exp/ltr/cf_v2_10k_top100_ablation `
+  --variants baseline no_cf_retrieval no_user_cf_retrieval no_history_cf_retrieval no_metadata_cf_popularity lean_history_cf `
+  --seed 13
+```
+
+运行当前最佳 CF 候选：
+
+```powershell
+.\.venv\Scripts\python.exe run_inference_ltr_blindset.py `
+  --model_path exp/ltr/cf_v2_10k_top100_ablation/no_metadata_cf_popularity/model.txt `
+  --output_name multichannel_ltr_cf_v2_lean_empty `
+  --channel_topk 100 `
+  --history_turns 0 `
+  --enable_cf_retrieval `
+  --no-enable_query_dense `
+  --embedding_batch_size 64 `
+  --device cuda
+```
+
+当前建议首先提交：
+
+```text
+exp/inference/blindset_A/multichannel_ltr_cf_v2_top5lock_submission.zip
 ```
 
 ## 旧版 MiniLM 实验

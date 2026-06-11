@@ -2023,3 +2023,108 @@ composite_score     0.6373
 4. 在 Dev 上分别做候选召回率与特征消融，再决定是否训练新 LambdaRank
 5. Blind A 推理时继续锁定当前冠军 Top1/回复，只在新模型通过 Dev 消融后替换后排
 ```
+
+## 2026-06-11：CF 召回增强 v2
+
+### 新增通道
+
+在原有候选池之外新增三类可选通道：
+
+```text
+query-qwen3     请求文本 -> Qwen metadata embedding 语义召回
+user-cf         用户 cf-bpr 向量 -> 歌曲 cf-bpr 向量召回
+cf-bpr:last     最后一首历史歌曲 -> CF 相似歌曲召回
+cf-bpr:mean     历史歌曲平均向量 -> CF 相似歌曲召回
+```
+
+所有新通道默认关闭，旧冠军推理命令保持完全兼容。兼容性测试中，更新代码生成的旧冠军
+排序与此前产物 `80/80` 条完全一致。
+
+### 小样本筛选
+
+在 100 个 Dev session、共 800 个轮次上，新通道将旧候选池的候选命中率从
+`0.5400` 提升到 `0.5825`，净补回 34 个旧系统完全漏掉的正例；Turn1 候选命中率
+从 `0.4300` 提升到 `0.4800`。
+
+但是训练消融显示 `query-qwen3` 会拖累排序，因此正式全量实验只启用 CF 召回：
+
+```text
+--enable_cf_retrieval --no-enable_query_dense
+```
+
+### 全量候选与训练
+
+```text
+训练任务：10000
+Dev 任务：8000
+训练正例可召回组：7162
+Dev 正例可召回组：4702
+```
+
+候选覆盖对比：
+
+| 指标 | 旧候选池 | 旧候选池 + CF | 变化 |
+|---|---:|---:|---:|
+| overall candidate recall | 0.5454 | 0.5878 | +0.0424 |
+| Turn1 candidate recall | 0.4200 | 0.4610 | +0.0410 |
+| Blind 加权 candidate recall | 0.5279 | 0.5700 | +0.0421 |
+
+CF 通道共净补回 339 个旧候选池完全漏掉的 Dev 正例。
+
+### LambdaRank 消融结果
+
+表现最好的版本仍采用此前验证有效的特征裁剪：
+
+```text
+保留：BM25、结构、图像、user-cf 召回、历史 cf-bpr 召回、Query 显式匹配
+移除：metadata history 通道、旧 user_track_cf 特征、popularity、release_year
+```
+
+新模型：
+
+```text
+exp/ltr/cf_v2_10k_top100_ablation/no_metadata_cf_popularity/model.txt
+```
+
+与旧冠军对应模型的完整 Dev 对比：
+
+| 范围 | 旧模型 nDCG@20 | CF v2 nDCG@20 | 变化 |
+|---|---:|---:|---:|
+| overall | 0.1905 | 0.2240 | +0.0336 |
+| Turn1 | 0.1925 | 0.2215 | +0.0290 |
+| Turn2+ | 0.1902 | 0.2244 | +0.0342 |
+| Blind 轮次加权 | 0.1918 | 0.2269 | **+0.0351** |
+
+`user-cf__score`、`cf-bpr__mean__score` 和 `cf-bpr__mean__reciprocal_rank`
+均进入重要特征，说明收益确实来自新增 CF 信号。
+
+### Blind A 待提交候选
+
+新模型的原始 Blind A 排序相对当前冠军：
+
+```text
+ChangedLists: 78 / 80
+SameTop1: 56 / 80
+AvgTop20Overlap: 15.40 / 20
+```
+
+为保留当前冠军回复并控制 Judge 风险，已生成三个锁定候选：
+
+```text
+Top1 锁定： exp/inference/blindset_A/multichannel_ltr_cf_v2_top1lock_submission.zip
+Top5 锁定： exp/inference/blindset_A/multichannel_ltr_cf_v2_top5lock_submission.zip
+Top10 锁定：exp/inference/blindset_A/multichannel_ltr_cf_v2_top10lock_submission.zip
+```
+
+推荐提交顺序：
+
+1. 先提交 Top5 锁定版。它保留最影响 Judge 的前五项，同时允许 CF 模型优化后排。
+2. 若 Top5 有提升，再尝试 Top1 锁定版获取更高 nDCG 上限。
+3. 若 Top5 下降，则提交 Top10 锁定版验证收益是否只存在于更后排位置。
+
+三个 ZIP 均已校验为 80 行、每行 20 首歌曲、仅含 `prediction.json`，回复与当前冠军
+完全一致。当前正式冠军在获得新官方结果前仍保持为：
+
+```text
+exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_top1lock_submission.zip
+```

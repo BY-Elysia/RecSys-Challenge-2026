@@ -47,6 +47,14 @@ ABLATION_GROUPS = {
             "metadata-qwen3_embedding_0.6b__mean",
         ],
     },
+    "query_dense": {
+        "prefixes": ["query-qwen3__"],
+        "retrieval_channels": ["query-qwen3"],
+    },
+    "cf_retrieval": {
+        "prefixes": ["user-cf__", "cf-bpr__"],
+        "retrieval_channels": ["user-cf", "cf-bpr__last", "cf-bpr__mean"],
+    },
     "cf": {
         "prefixes": ["user_track_cf_"],
         "retrieval_channels": [],
@@ -73,6 +81,10 @@ RETRIEVAL_CHANNELS = [
     "image-siglip2__mean",
     "metadata-qwen3_embedding_0.6b__last",
     "metadata-qwen3_embedding_0.6b__mean",
+    "query-qwen3",
+    "user-cf",
+    "cf-bpr__last",
+    "cf-bpr__mean",
 ]
 
 
@@ -91,9 +103,14 @@ def active_candidate_mask(
 ) -> np.ndarray:
     if not removed_channels:
         return np.ones(len(features), dtype=bool)
+    available_channels = [
+        name.removesuffix("__present")
+        for name in feature_names
+        if name.endswith("__present")
+    ]
     remaining = [
         channel
-        for channel in RETRIEVAL_CHANNELS
+        for channel in available_channels
         if channel not in removed_channels
     ]
     present_columns = [

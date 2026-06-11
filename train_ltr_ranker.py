@@ -25,20 +25,32 @@ from evaluate_final_turn_recall import (
 )
 from mcrs.retrieval_modules.bm25 import BM25_MODEL
 from mcrs.retrieval_modules.precomputed_embeddings import PrecomputedTrackEmbeddingIndex
+from mcrs.retrieval_modules.qwen_dense import DEFAULT_TASK_INSTRUCTION, QwenDenseRetriever
 from train_reranker import build_query_text, get_turn_target, track_to_text
 
 
-EMBEDDING_CHANNELS = [
+HISTORY_EMBEDDING_CHANNELS = [
     ("image-siglip2", "last"),
     ("image-siglip2", "mean"),
     ("metadata-qwen3_embedding_0.6b", "last"),
     ("metadata-qwen3_embedding_0.6b", "mean"),
+    ("cf-bpr", "last"),
+    ("cf-bpr", "mean"),
 ]
+QUERY_DENSE_CHANNEL = "query-qwen3"
+USER_CF_CHANNEL = "user-cf"
 CHANNEL_NAMES = [
     "bm25_legacy",
     "bm25_feedback",
     "structure",
-    *[f"{field}:{aggregation}" for field, aggregation in EMBEDDING_CHANNELS],
+    QUERY_DENSE_CHANNEL,
+    USER_CF_CHANNEL,
+    *[f"{field}:{aggregation}" for field, aggregation in HISTORY_EMBEDDING_CHANNELS],
+]
+SCORED_CHANNELS = [
+    QUERY_DENSE_CHANNEL,
+    USER_CF_CHANNEL,
+    *[f"{field}:{aggregation}" for field, aggregation in HISTORY_EMBEDDING_CHANNELS],
 ]
 GOAL_CATEGORIES = list("ABCDEFGHIJK")
 SPECIFICITIES = ["LL", "LH", "HL", "HH"]
@@ -168,8 +180,8 @@ def feature_names() -> list[str]:
     for channel in CHANNEL_NAMES:
         safe_channel = channel.replace(":", "__")
         names.extend([f"{safe_channel}__reciprocal_rank", f"{safe_channel}__present"])
-    for field, aggregation in EMBEDDING_CHANNELS:
-        names.append(f"{field}__{aggregation}__score")
+    for channel in SCORED_CHANNELS:
+        names.append(f"{channel.replace(':', '__')}__score")
     names.extend([
         "same_last_artist",
         "same_any_artist",
@@ -232,8 +244,8 @@ def build_candidate_feature_rows(
         for name in CHANNEL_NAMES:
             rank = rank_maps[name].get(track_id)
             row.extend([1.0 / rank if rank else 0.0, float(rank is not None)])
-        for field, aggregation in EMBEDDING_CHANNELS:
-            row.append(score_maps[f"{field}:{aggregation}"].get(track_id, 0.0))
+        for channel in SCORED_CHANNELS:
+            row.append(score_maps[channel].get(track_id, 0.0))
 
         artists = {str(value) for value in metadata.get("artist_id", [])}
         albums = {str(value) for value in metadata.get("album_id", [])}
@@ -280,8 +292,10 @@ def build_channel_candidates(
     channel_topk: int,
     embedding_batch_size: int,
     text_retrieval_batch_size: int,
+    user_cf: dict[str, np.ndarray],
     cache_dir: str,
     device: str | None,
+    args,
 ) -> tuple[dict[str, list[list[str]]], dict[str, list[list[float]]]]:
     channels: dict[str, list[list[str]]] = {}
     channel_scores: dict[str, list[list[float]]] = {}
@@ -321,14 +335,72 @@ def build_channel_candidates(
     channel_scores["bm25_feedback"] = [[] for _ in tasks]
     channel_scores["structure"] = [[] for _ in tasks]
 
-    fields = list(dict.fromkeys(field for field, _ in EMBEDDING_CHANNELS))
+    if args.enable_query_dense:
+        dense = QwenDenseRetriever(
+            embedding_field=args.query_dense_embedding_field,
+            model_name=args.query_dense_model_name,
+            cache_dir=cache_dir,
+            device=device,
+            max_length=args.query_dense_max_length,
+            query_batch_size=args.query_dense_batch_size,
+            task_instruction=args.query_dense_instruction,
+        )
+        dense_ids, dense_scores = dense.batch_text_to_item_retrieval_with_scores(
+            [task.feedback_query for task in tasks],
+            topk=channel_topk + extra,
+        )
+        channels[QUERY_DENSE_CHANNEL] = [
+            filter_seen(candidates, task.history, channel_topk)
+            for task, candidates in zip(tasks, dense_ids)
+        ]
+        channel_scores[QUERY_DENSE_CHANNEL] = [
+            [
+                score
+                for track_id, score in zip(candidates, scores)
+                if track_id not in set(task.history)
+            ][:channel_topk]
+            for task, candidates, scores in zip(tasks, dense_ids, dense_scores)
+        ]
+        dense.unload()
+    else:
+        channels[QUERY_DENSE_CHANNEL] = [[] for _ in tasks]
+        channel_scores[QUERY_DENSE_CHANNEL] = [[] for _ in tasks]
+
+    if args.enable_cf_retrieval:
+        cf_index = PrecomputedTrackEmbeddingIndex(
+            embedding_field="cf-bpr",
+            cache_dir=cache_dir,
+            device=device,
+        )
+        user_cf_ids, user_cf_scores = cf_index.batch_vector_retrieval(
+            [user_cf.get(task.user_id) for task in tasks],
+            topk=channel_topk,
+            batch_size=embedding_batch_size,
+            exclude_track_ids=[task.history for task in tasks],
+        )
+        channels[USER_CF_CHANNEL] = user_cf_ids
+        channel_scores[USER_CF_CHANNEL] = user_cf_scores
+        cf_index.unload()
+    else:
+        channels[USER_CF_CHANNEL] = [[] for _ in tasks]
+        channel_scores[USER_CF_CHANNEL] = [[] for _ in tasks]
+
+    fields = list(dict.fromkeys(field for field, _ in HISTORY_EMBEDDING_CHANNELS))
     for field in fields:
+        if field == "cf-bpr" and not args.enable_cf_retrieval:
+            for _, aggregation in [
+                pair for pair in HISTORY_EMBEDDING_CHANNELS if pair[0] == field
+            ]:
+                name = f"{field}:{aggregation}"
+                channels[name] = [[] for _ in tasks]
+                channel_scores[name] = [[] for _ in tasks]
+            continue
         index = PrecomputedTrackEmbeddingIndex(
             embedding_field=field,
             cache_dir=cache_dir,
             device=device,
         )
-        for _, aggregation in [pair for pair in EMBEDDING_CHANNELS if pair[0] == field]:
+        for _, aggregation in [pair for pair in HISTORY_EMBEDDING_CHANNELS if pair[0] == field]:
             ids, scores = index.batch_history_retrieval(
                 [task.history for task in tasks],
                 topk=channel_topk,
@@ -360,8 +432,10 @@ def build_feature_dataset(
         args.channel_topk,
         args.embedding_batch_size,
         args.text_retrieval_batch_size,
+        user_cf,
         args.cache_dir,
         args.device,
+        args,
     )
     names = feature_names()
     feature_groups: list[np.ndarray] = []
@@ -446,8 +520,10 @@ def build_inference_feature_dataset(
         args.channel_topk,
         args.embedding_batch_size,
         args.text_retrieval_batch_size,
+        user_cf,
         args.cache_dir,
         args.device,
+        args,
     )
     names = feature_names()
     feature_groups: list[np.ndarray] = []
@@ -809,6 +885,24 @@ if __name__ == "__main__":
     parser.add_argument("--channel_topk", type=int, default=50)
     parser.add_argument("--embedding_batch_size", type=int, default=32)
     parser.add_argument("--text_retrieval_batch_size", type=int, default=5000)
+    parser.add_argument(
+        "--enable_query_dense",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--enable_cf_retrieval",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--query_dense_embedding_field",
+        default="metadata-qwen3_embedding_0.6b",
+    )
+    parser.add_argument("--query_dense_model_name", default="Qwen/Qwen3-Embedding-0.6B")
+    parser.add_argument("--query_dense_max_length", type=int, default=512)
+    parser.add_argument("--query_dense_batch_size", type=int, default=16)
+    parser.add_argument("--query_dense_instruction", default=DEFAULT_TASK_INSTRUCTION)
     parser.add_argument("--history_turns", type=int, default=0)
     parser.add_argument("--rrf_k", type=int, default=60)
     parser.add_argument("--train_turn_mode", choices=["all", "final"], default="all")
