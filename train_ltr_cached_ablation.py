@@ -3,6 +3,7 @@
 import argparse
 import gc
 import json
+import math
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -122,6 +123,36 @@ VARIANTS = {
         "remove_channels": [
             "metadata-qwen3_embedding_0.6b__last",
             "metadata-qwen3_embedding_0.6b__mean",
+        ],
+    },
+    "legacy_champion": {
+        "remove_prefixes": [
+            "query-qwen3__",
+            "user-cf__",
+            "metadata-qwen3_embedding_0.6b__",
+            "cf-bpr__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "query_tag_",
+            "query_year_",
+            "query_decade_",
+            "same_artist_request_",
+            "same_album_request_",
+            "different_artist_request_",
+            "instrumental_request_",
+            "live_request_",
+            "remix_request_",
+            "popularity_request_",
+            "era_request_",
+        ],
+        "remove_channels": [
+            "query-qwen3",
+            "user-cf",
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+            "cf-bpr__last",
+            "cf-bpr__mean",
         ],
     },
     "champion_plus_constraints_no_tags": {
@@ -246,18 +277,50 @@ def active_rows_for_channels(
     return np.any(dataset.features[:, present_columns] > 0, axis=1)
 
 
+def stable_ndcg20_eval(
+    predictions: np.ndarray,
+    evaluation_data: lgb.Dataset,
+) -> tuple[str, float, bool]:
+    """Match inference's stable descending sort when validation scores tie."""
+    labels = evaluation_data.get_label()
+    groups = evaluation_data.get_group()
+    total = 0.0
+    offset = 0
+    for group_size in groups:
+        size = int(group_size)
+        group_labels = labels[offset:offset + size]
+        positives = np.flatnonzero(group_labels > 0)
+        if positives.size:
+            positive = int(positives[0])
+            order = np.argsort(
+                -predictions[offset:offset + size],
+                kind="stable",
+            )
+            rank = int(np.flatnonzero(order == positive)[0] + 1)
+            if rank <= 20:
+                total += 1.0 / math.log2(rank + 1)
+        offset += size
+    return "stable_ndcg@20", total / max(1, len(groups)), True
+
+
 def prepare_dataset(
     dataset: FeatureDataset,
     feature_indices: list[int],
     remove_channels: list[str],
     allowed_turns: set[int] | None = None,
     require_positive: bool = False,
+    max_candidates_per_group: int | None = None,
 ) -> FeatureDataset:
     active_rows = active_rows_for_channels(dataset, remove_channels)
     kept_rows = np.zeros(len(dataset.labels), dtype=bool)
     groups = []
     group_task_indices = []
     offset = 0
+    retrieval_rank_columns = [
+        index
+        for index, name in enumerate(dataset.feature_names)
+        if name.endswith("__reciprocal_rank")
+    ]
 
     for group_size, task_index in zip(dataset.groups, dataset.group_task_indices):
         group_active = active_rows[offset:offset + group_size]
@@ -265,8 +328,33 @@ def prepare_dataset(
         allowed = allowed_turns is None or dataset.task_turns[task_index] in allowed_turns
         positive_active = bool(np.any(group_active & (group_labels > 0)))
         if allowed and np.any(group_active) and (positive_active or not require_positive):
-            kept_rows[offset:offset + group_size] = group_active
-            groups.append(int(np.count_nonzero(group_active)))
+            selected = np.flatnonzero(group_active)
+            if (
+                max_candidates_per_group is not None
+                and len(selected) > max_candidates_per_group
+            ):
+                positives = np.flatnonzero(group_active & (group_labels > 0))
+                positive_set = set(int(index) for index in positives)
+                negatives = np.asarray(
+                    [index for index in selected if int(index) not in positive_set],
+                    dtype=np.int64,
+                )
+                retrieval_scores = np.asarray(
+                    dataset.features[
+                        offset + negatives[:, None],
+                        retrieval_rank_columns,
+                    ],
+                    dtype=np.float32,
+                ).sum(axis=1)
+                negative_order = np.argsort(-retrieval_scores, kind="stable")
+                negative_limit = max_candidates_per_group - len(positives)
+                selected = np.concatenate([
+                    positives,
+                    negatives[negative_order[:negative_limit]],
+                ])
+                selected.sort()
+            kept_rows[offset + selected] = True
+            groups.append(len(selected))
             group_task_indices.append(task_index)
         offset += group_size
 
@@ -305,6 +393,7 @@ def train_variant(
         feature_indices,
         definition["remove_channels"],
         require_positive=True,
+        max_candidates_per_group=args.max_train_candidates,
     )
     print(f"[{name}] Preparing Turn 8 validation matrix...")
     valid_data = prepare_dataset(
@@ -339,8 +428,8 @@ def train_variant(
     )
     params = {
         "objective": "lambdarank",
-        "metric": "ndcg",
-        "eval_at": [1, 5, 20],
+        "metric": "None" if args.stable_tie_validation else "ndcg",
+        "eval_at": args.eval_at,
         "learning_rate": args.learning_rate,
         "num_leaves": args.num_leaves,
         "min_data_in_leaf": args.min_data_in_leaf,
@@ -358,6 +447,7 @@ def train_variant(
         num_boost_round=args.num_boost_round,
         valid_sets=[valid_set],
         valid_names=["turn8"],
+        feval=stable_ndcg20_eval if args.stable_tie_validation else None,
         callbacks=[
             lgb.early_stopping(args.early_stopping_rounds),
             lgb.log_evaluation(args.log_period),
@@ -481,6 +571,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_boost_round", type=int, default=500)
     parser.add_argument("--early_stopping_rounds", type=int, default=40)
+    parser.add_argument("--eval_at", nargs="+", type=int, default=[1, 5, 20])
+    parser.add_argument("--max_train_candidates", type=int, default=None)
+    parser.add_argument(
+        "--stable_tie_validation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--learning_rate", type=float, default=0.03)
     parser.add_argument("--num_leaves", type=int, default=31)
     parser.add_argument("--min_data_in_leaf", type=int, default=50)

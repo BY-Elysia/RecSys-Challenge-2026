@@ -768,8 +768,8 @@ def ranks_from_predictions(dataset: FeatureDataset, predictions: np.ndarray) -> 
         positive_indices = np.flatnonzero(group_labels)
         if len(positive_indices):
             positive_index = int(positive_indices[0])
-            positive_score = group_predictions[positive_index]
-            ranks[task_index] = int(np.count_nonzero(group_predictions > positive_score) + 1)
+            order = np.argsort(-group_predictions, kind="stable")
+            ranks[task_index] = int(np.flatnonzero(order == positive_index)[0] + 1)
         offset += group_size
     return ranks
 

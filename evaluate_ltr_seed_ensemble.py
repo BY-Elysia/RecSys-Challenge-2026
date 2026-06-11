@@ -1,6 +1,7 @@
 """Evaluate score ensembles and turn-aware gates for compatible LTR models."""
 
 import argparse
+import itertools
 import json
 import os
 
@@ -74,7 +75,7 @@ def compact(metrics: dict) -> dict:
 
 def main(args) -> None:
     cache = load_feature_dataset(args.dev_feature_cache_dir, mmap_mode="r")
-    definition = VARIANTS["no_metadata_cf_popularity"]
+    definition = VARIANTS[args.variant]
     feature_indices = kept_feature_indices(
         cache.feature_names,
         definition["remove_prefixes"],
@@ -102,30 +103,33 @@ def main(args) -> None:
         for name, values in predictions.items()
     }
     names = list(predictions)
-    for selected_names in [
-        [name for name in ["s13", "s47"] if name in predictions],
-        [name for name in ["s13", "s29", "s47"] if name in predictions],
-        [name for name in ["v2", "s13", "s47"] if name in predictions],
-    ]:
-        if len(selected_names) < 2:
-            continue
-        label = "_".join(selected_names)
-        raw_mean = np.mean([predictions[name] for name in selected_names], axis=0)
-        methods[f"raw_mean__{label}"] = evaluate(dataset, raw_mean)
-        minmax_mean = np.mean([
-            groupwise_normalize(predictions[name], dataset.groups, "minmax")
-            for name in selected_names
-        ], axis=0)
-        methods[f"minmax_mean__{label}"] = evaluate(dataset, minmax_mean)
-        rrf = np.sum([
-            groupwise_normalize(predictions[name], dataset.groups, "rrf")
-            for name in selected_names
-        ], axis=0)
-        methods[f"rrf__{label}"] = evaluate(dataset, rrf)
+    for size in range(2, len(names) + 1):
+        for selected_names in itertools.combinations(names, size):
+            selected_names = list(selected_names)
+            label = "_".join(selected_names)
+            raw_mean = np.mean([predictions[name] for name in selected_names], axis=0)
+            methods[f"raw_mean__{label}"] = evaluate(dataset, raw_mean)
+            minmax_mean = np.mean([
+                groupwise_normalize(predictions[name], dataset.groups, "minmax")
+                for name in selected_names
+            ], axis=0)
+            methods[f"minmax_mean__{label}"] = evaluate(dataset, minmax_mean)
+            rrf = np.sum([
+                groupwise_normalize(predictions[name], dataset.groups, "rrf")
+                for name in selected_names
+            ], axis=0)
+            methods[f"rrf__{label}"] = evaluate(dataset, rrf)
 
-    if "s13" in predictions and "s47" in predictions:
-        gated = turn_gate_predictions(dataset, predictions, "s13", "s47")
-        methods["gate__turn1_s13__turn2plus_s47"] = evaluate(dataset, gated)
+    for turn1_model, later_model in itertools.permutations(names, 2):
+        gated = turn_gate_predictions(
+            dataset,
+            predictions,
+            turn1_model,
+            later_model,
+        )
+        methods[
+            f"gate__turn1_{turn1_model}__turn2plus_{later_model}"
+        ] = evaluate(dataset, gated)
 
     ranked = sorted(
         (
@@ -164,6 +168,7 @@ if __name__ == "__main__":
         "--dev_feature_cache_dir",
         default="cache/ltr/dev_all_top100_v1",
     )
+    parser.add_argument("--variant", choices=list(VARIANTS), default="no_metadata_cf_popularity")
     parser.add_argument(
         "--output_path",
         default="exp/ltr/lean_30k_top100_ensemble/report.json",

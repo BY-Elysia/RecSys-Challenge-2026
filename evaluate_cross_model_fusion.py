@@ -94,8 +94,13 @@ def ranks_with_locked_anchor_prefix(
             eligible = group_union_active.copy()
             if locked:
                 eligible[list(locked)] = False
-            higher = np.count_nonzero(eligible & (group_fused > group_fused[positive_index]))
-            ranks[task_index] = int(lock_prefix + higher + 1)
+            eligible_indices = np.flatnonzero(eligible)
+            order = eligible_indices[
+                np.argsort(-group_fused[eligible_indices], kind="stable")
+            ]
+            ranks[task_index] = int(
+                lock_prefix + np.flatnonzero(order == positive_index)[0] + 1
+            )
         offset += group_size
     return ranks
 

@@ -149,11 +149,12 @@ def ranks_from_masked_predictions(
         group_active = active_rows[offset:offset + group_size]
         positive_index = int(np.flatnonzero(group_labels)[0])
         if group_active[positive_index]:
-            positive_score = group_predictions[positive_index]
+            active_indices = np.flatnonzero(group_active)
+            order = active_indices[
+                np.argsort(-group_predictions[active_indices], kind="stable")
+            ]
             ranks[task_index] = int(
-                np.count_nonzero(
-                    group_active & (group_predictions > positive_score)
-                ) + 1
+                np.flatnonzero(order == positive_index)[0] + 1
             )
         offset += group_size
     return ranks

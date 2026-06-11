@@ -66,11 +66,15 @@ def ranks_locked_top1(
         if positive_index == anchor_top1:
             ranks[task_index] = 1
         else:
-            positive_score = group_fused[positive_index]
             eligible = np.ones(group_size, dtype=bool)
             eligible[anchor_top1] = False
-            higher = np.count_nonzero(eligible & (group_fused > positive_score))
-            ranks[task_index] = int(higher + 2)
+            eligible_indices = np.flatnonzero(eligible)
+            order = eligible_indices[
+                np.argsort(-group_fused[eligible_indices], kind="stable")
+            ]
+            ranks[task_index] = int(
+                np.flatnonzero(order == positive_index)[0] + 2
+            )
         offset += group_size
     return ranks
 
@@ -103,12 +107,16 @@ def ranks_locked_top1_anchor_top20(
         if positive_index == anchor_top1:
             ranks[task_index] = 1
         else:
-            positive_score = group_fused[positive_index]
             eligible = np.zeros(group_size, dtype=bool)
             eligible[list(anchor_top20)] = True
             eligible[anchor_top1] = False
-            higher = np.count_nonzero(eligible & (group_fused > positive_score))
-            ranks[task_index] = int(higher + 2)
+            eligible_indices = np.flatnonzero(eligible)
+            order = eligible_indices[
+                np.argsort(-group_fused[eligible_indices], kind="stable")
+            ]
+            ranks[task_index] = int(
+                np.flatnonzero(order == positive_index)[0] + 2
+            )
         offset += group_size
     return ranks
 
