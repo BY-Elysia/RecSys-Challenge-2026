@@ -1,45 +1,41 @@
 # 实验归档
 
-最后更新：2026-06-10
+最后更新：2026-06-12
 
 ## 当前最佳方案
 
-当前主线模型流程：
+当前正式冠军流程：
 
 ```text
-完整对话历史 Query
-  -> 包含 tag_list 的 BM25 召回前 400 个候选
-  -> 构造以当前请求优先的聚焦 Query
-  -> 在标签候选上继续训练的 Listwise MiniLM-L6 Cross-Encoder 重排序
-  -> 选取前 20 首歌曲
-  -> 豆包生成自然语言回复
+legacy BM25 + feedback-rich BM25
+  -> 同歌手/同专辑结构召回
+  -> image SigLIP2 历史歌曲相似召回
+  -> 36 维候选特征
+  -> LightGBM LambdaRank v2
+  -> Turn1 使用 30k seed13 调整 Top2-20
+  -> 锁定 v2 Top1 和现有豆包回复
 ```
 
-Blind A 当前最佳排序结果：
+Blind A 当前正式冠军：
 
 | 指标 | 分数 |
 |---|---:|
-| ndcg@20 | **0.1946** |
-| catalog_diversity | **0.0318** |
-| lexical_diversity | 0.7300 |
+| ndcg@20 | **0.5566** |
+| catalog_diversity | 0.0307 |
+| lexical_diversity | 0.7465 |
 | llm_judge_score | **4.7500** |
-| composite_score | **0.4547** |
-
-当前最高综合分为 `0.4559`，来自“混合训练模型 + Dense Hybrid 候选”。
-但该提交的 `ndcg@20` 仅为 `0.1806`，明显低于最佳排序主线的 `0.1946`；
-综合分新高主要来自更高的回复评分，因此暂不替换当前排序主线。
+| composite_score | **0.6373** |
 
 当前保留的标准产物：
 
 ```text
-exp/reranker/minilm_bm25_tags_top400_e1/
-exp/inference/blindset_A/tags_top400_e1_empty.json
-exp/inference/blindset_A/tags_top400_e1_prediction.json
-exp/inference/blindset_A/tags_top400_e1_submission.zip
+exp/ltr/cached_ablation_10k_top100/no_metadata_cf_popularity/model.txt
+exp/ltr/lean_30k_top100_seed13/no_metadata_cf_popularity/model.txt
+exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_top1lock_prediction.json
+exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_top1lock_submission.zip
 ```
 
-`tags_top400_e1_submission.zip` 中的 `prediction.json` 与单独保留的
-`tags_top400_e1_prediction.json` 完全一致。
+2026-06-12 新生成的监督稠密 Turn1 候选尚未取得官方分数，因此不能替换上述冠军。
 
 ## 分数历史
 
@@ -2602,3 +2598,136 @@ composite_score     0.6373
 下一步先提交上述候选。若官方 nDCG 提升，则继续围绕 Top200 hard-384 做后续轮次
 种子融合或增大训练任务数；若回退，则保留稳定评估修复，但停止 Top200 软排序替换，
 转向训练监督式 Query-to-track 双塔召回器。
+
+## 2026-06-12：监督式 Query-to-track 稠密召回
+
+### Top200 官方结果
+
+上一节的 Top200 hard-384 seed71 候选取得官方结果：
+
+```text
+ndcg@20             0.5536
+catalog_diversity   0.0305
+lexical_diversity   0.7465
+llm_judge_score     4.6500
+composite_score     0.6282
+```
+
+相对正式冠军 `0.5566 / 0.0307 / 0.7465 / 4.7500 / 0.6373` 全面无提升。
+因此 Top200 后排替换正式停止，转向提升候选召回本身。
+
+### 模型结构
+
+新增监督式稠密召回器：
+
+```text
+feedback-rich 对话 Query
+  -> 冻结 Qwen3-Embedding-0.6B
+  -> 1024 维基础 Query embedding
+  -> Residual MLP Query adapter
+  -> 与官方 Qwen3 歌曲 metadata embedding 做余弦检索
+```
+
+歌曲塔保持冻结和恒等映射，只训练 Query adapter。训练目标由三部分组成：
+
+1. 正例与 32 个基础稠密检索困难负例的交叉熵。
+2. 权重 `0.05` 的 batch 内负例损失。
+3. 权重 `1.0` 的基础向量对齐正则，防止小数据训练破坏原始语义空间。
+
+最终稳定参数为 `lr=1e-5`、`batch_size=128`、`epochs=4`，按完整 Dev
+Blind 轮次加权 `Recall@100` 选择最佳 checkpoint。较大的 `2e-4` 学习率会让
+Query 向量几何结构迅速坍缩；此外，先把重复 batch 内位置写成 `-inf` 再乘可学习
+温度会产生 NaN，现已改为先缩放有限 logits，再应用 mask。
+
+模型产物：
+
+```text
+exp/dense/supervised_qwen_query_adapter_10k_lr1e5_inbatch005/
+```
+
+### 稠密召回评估
+
+| 模型 | Blind 加权 Recall@20 | Recall@100 | Recall@200 | nDCG@20 |
+|---|---:|---:|---:|---:|
+| 原始 Qwen3 | 0.15221 | 0.24963 | 0.28857 | 0.07234 |
+| 监督 Query adapter，第 3 轮 | **0.16894** | **0.27136** | **0.31614** | **0.07785** |
+
+把监督稠密 Top100 与原 Top100 候选池合并后：
+
+```text
+旧候选池整体召回                 0.545375
+合并后整体召回                   0.561750
+净补回 Dev 正例                  131
+Blind 轮次加权旧候选召回          0.527913
+Blind 轮次加权合并召回            0.548763
+Blind 加权净增                    +0.020850
+Turn1 旧候选召回                 0.420
+Turn1 合并召回                   0.462
+Turn1 净增                       +0.042
+```
+
+监督稠密召回的主要价值集中在 Turn1，因此不适合直接替换全轮次排序。
+
+### LTR 消融与轮次门控
+
+直接在全轮次模型中加入监督稠密分数会退化。仅保留该通道的 `rank/present`，
+并用 Turn1 验证，比使用原始相似度更稳定。最佳专家训练方式：
+
+```text
+训练轮次：Turn1 + Turn2
+验证轮次：Turn1
+监督稠密特征：rank + present，不使用 score
+最佳迭代：30
+Turn1 Dev nDCG@20：0.160706
+```
+
+模型：
+
+```text
+exp/ltr/supervised_dense_turn12_train/legacy_plus_supervised_dense_rank/model.txt
+```
+
+按最终提交结构做稳定排序评估：
+
+```text
+当前冠军同构：
+  v2 Top1 + seed13 Turn1 Top2-20 + v2 Turn2+
+  Blind 加权 Dev nDCG@20 = 0.170170
+
+新候选：
+  v2 Top1 + 监督稠密 Turn1 Top2-20 + v2 Turn2+
+  Blind 加权 Dev nDCG@20 = 0.171431
+
+本地变化 = +0.001261
+```
+
+### 新待评测候选
+
+Blind 推理脚本现支持 Turn1 模型和后续模型使用不同特征集合与不同候选行数。
+新候选严格保持正式冠军的 Top1、Turn2+ 排序和全部自然语言回复，只调整 20 条
+Turn1 的 Top2-20：
+
+```text
+正式预测：
+exp/inference/blindset_A/multichannel_ltr_turn1_supervised_dense_later_v2_top1lock_prediction.json
+
+提交包：
+exp/inference/blindset_A/multichannel_ltr_turn1_supervised_dense_later_v2_top1lock_submission.zip
+```
+
+结构校验：
+
+```text
+Rows                              80
+ChangedLists                      20
+ChangedTurns                      [1]
+ChangedTop1                       0
+ResponsesSameAsChampion           80 / 80
+DuplicateTracksPerRow             0
+AvgTop20OverlapOnChangedRows      12.35 / 20
+MinTop20OverlapOnChangedRows      6 / 20
+zip entries                       ["prediction.json"]
+```
+
+该候选尚未取得官方分数。正式冠军仍为 `nDCG@20=0.5566`、
+`composite_score=0.6373`。

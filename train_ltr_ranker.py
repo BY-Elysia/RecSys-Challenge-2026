@@ -26,6 +26,7 @@ from evaluate_final_turn_recall import (
 from mcrs.retrieval_modules.bm25 import BM25_MODEL
 from mcrs.retrieval_modules.precomputed_embeddings import PrecomputedTrackEmbeddingIndex
 from mcrs.retrieval_modules.qwen_dense import DEFAULT_TASK_INSTRUCTION, QwenDenseRetriever
+from mcrs.retrieval_modules.supervised_dense import SupervisedDenseRetriever
 from train_reranker import build_query_text, get_turn_target, track_to_text
 
 
@@ -38,17 +39,20 @@ HISTORY_EMBEDDING_CHANNELS = [
     ("cf-bpr", "mean"),
 ]
 QUERY_DENSE_CHANNEL = "query-qwen3"
+SUPERVISED_DENSE_CHANNEL = "supervised-dense"
 USER_CF_CHANNEL = "user-cf"
 CHANNEL_NAMES = [
     "bm25_legacy",
     "bm25_feedback",
     "structure",
     QUERY_DENSE_CHANNEL,
+    SUPERVISED_DENSE_CHANNEL,
     USER_CF_CHANNEL,
     *[f"{field}:{aggregation}" for field, aggregation in HISTORY_EMBEDDING_CHANNELS],
 ]
 SCORED_CHANNELS = [
     QUERY_DENSE_CHANNEL,
+    SUPERVISED_DENSE_CHANNEL,
     USER_CF_CHANNEL,
     *[f"{field}:{aggregation}" for field, aggregation in HISTORY_EMBEDDING_CHANNELS],
 ]
@@ -518,6 +522,40 @@ def build_channel_candidates(
     else:
         channels[QUERY_DENSE_CHANNEL] = [[] for _ in tasks]
         channel_scores[QUERY_DENSE_CHANNEL] = [[] for _ in tasks]
+
+    if args.enable_supervised_dense:
+        supervised = SupervisedDenseRetriever(
+            checkpoint_dir=args.supervised_dense_checkpoint,
+            cache_dir=cache_dir,
+            device=device,
+            query_batch_size=args.supervised_dense_query_batch_size,
+        )
+        supervised_ids, supervised_scores = (
+            supervised.batch_text_to_item_retrieval_with_scores(
+                [task.feedback_query for task in tasks],
+                topk=channel_topk + extra,
+            )
+        )
+        channels[SUPERVISED_DENSE_CHANNEL] = [
+            filter_seen(candidates, task.history, channel_topk)
+            for task, candidates in zip(tasks, supervised_ids)
+        ]
+        channel_scores[SUPERVISED_DENSE_CHANNEL] = [
+            [
+                score
+                for track_id, score in zip(candidates, scores)
+                if track_id not in set(task.history)
+            ][:channel_topk]
+            for task, candidates, scores in zip(
+                tasks,
+                supervised_ids,
+                supervised_scores,
+            )
+        ]
+        supervised.unload()
+    else:
+        channels[SUPERVISED_DENSE_CHANNEL] = [[] for _ in tasks]
+        channel_scores[SUPERVISED_DENSE_CHANNEL] = [[] for _ in tasks]
 
     if args.enable_cf_retrieval:
         cf_index = PrecomputedTrackEmbeddingIndex(
@@ -1049,6 +1087,11 @@ if __name__ == "__main__":
         default=False,
     )
     parser.add_argument(
+        "--enable_supervised_dense",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
         "--query_dense_embedding_field",
         default="metadata-qwen3_embedding_0.6b",
     )
@@ -1056,6 +1099,11 @@ if __name__ == "__main__":
     parser.add_argument("--query_dense_max_length", type=int, default=512)
     parser.add_argument("--query_dense_batch_size", type=int, default=16)
     parser.add_argument("--query_dense_instruction", default=DEFAULT_TASK_INSTRUCTION)
+    parser.add_argument(
+        "--supervised_dense_checkpoint",
+        default="exp/dense/supervised_qwen_adapter_10k_feedback",
+    )
+    parser.add_argument("--supervised_dense_query_batch_size", type=int, default=16)
     parser.add_argument("--history_turns", type=int, default=0)
     parser.add_argument("--rrf_k", type=int, default=60)
     parser.add_argument("--train_turn_mode", choices=["all", "final"], default="all")

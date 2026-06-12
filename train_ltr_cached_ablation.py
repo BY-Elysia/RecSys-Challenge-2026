@@ -128,6 +128,100 @@ VARIANTS = {
     "legacy_champion": {
         "remove_prefixes": [
             "query-qwen3__",
+            "supervised-dense__",
+            "user-cf__",
+            "metadata-qwen3_embedding_0.6b__",
+            "cf-bpr__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "query_tag_",
+            "query_year_",
+            "query_decade_",
+            "same_artist_request_",
+            "same_album_request_",
+            "different_artist_request_",
+            "instrumental_request_",
+            "live_request_",
+            "remix_request_",
+            "popularity_request_",
+            "era_request_",
+        ],
+        "remove_channels": [
+            "query-qwen3",
+            "supervised-dense",
+            "user-cf",
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+            "cf-bpr__last",
+            "cf-bpr__mean",
+        ],
+    },
+    "legacy_plus_supervised_dense": {
+        "remove_prefixes": [
+            "query-qwen3__",
+            "user-cf__",
+            "metadata-qwen3_embedding_0.6b__",
+            "cf-bpr__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "query_tag_",
+            "query_year_",
+            "query_decade_",
+            "same_artist_request_",
+            "same_album_request_",
+            "different_artist_request_",
+            "instrumental_request_",
+            "live_request_",
+            "remix_request_",
+            "popularity_request_",
+            "era_request_",
+        ],
+        "remove_channels": [
+            "query-qwen3",
+            "user-cf",
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+            "cf-bpr__last",
+            "cf-bpr__mean",
+        ],
+    },
+    "legacy_plus_supervised_dense_rank": {
+        "remove_prefixes": [
+            "query-qwen3__",
+            "supervised-dense__score",
+            "user-cf__",
+            "metadata-qwen3_embedding_0.6b__",
+            "cf-bpr__",
+            "user_track_cf_",
+            "popularity",
+            "release_year",
+            "query_tag_",
+            "query_year_",
+            "query_decade_",
+            "same_artist_request_",
+            "same_album_request_",
+            "different_artist_request_",
+            "instrumental_request_",
+            "live_request_",
+            "remix_request_",
+            "popularity_request_",
+            "era_request_",
+        ],
+        "remove_channels": [
+            "query-qwen3",
+            "user-cf",
+            "metadata-qwen3_embedding_0.6b__last",
+            "metadata-qwen3_embedding_0.6b__mean",
+            "cf-bpr__last",
+            "cf-bpr__mean",
+        ],
+    },
+    "legacy_plus_supervised_dense_candidates": {
+        "remove_prefixes": [
+            "query-qwen3__",
+            "supervised-dense__",
             "user-cf__",
             "metadata-qwen3_embedding_0.6b__",
             "cf-bpr__",
@@ -392,15 +486,18 @@ def train_variant(
         train_cache,
         feature_indices,
         definition["remove_channels"],
+        allowed_turns=set(args.train_turns) if args.train_turns else None,
         require_positive=True,
         max_candidates_per_group=args.max_train_candidates,
     )
-    print(f"[{name}] Preparing Turn 8 validation matrix...")
+    validation_turns = set(args.validation_turns)
+    validation_label = "_".join(str(turn) for turn in sorted(validation_turns))
+    print(f"[{name}] Preparing Turn {validation_label} validation matrix...")
     valid_data = prepare_dataset(
         dev_cache,
         feature_indices,
         definition["remove_channels"],
-        allowed_turns={8},
+        allowed_turns=validation_turns,
         require_positive=True,
     )
     print(f"[{name}] Preparing full Dev matrix...")
@@ -446,7 +543,7 @@ def train_variant(
         train_set,
         num_boost_round=args.num_boost_round,
         valid_sets=[valid_set],
-        valid_names=["turn8"],
+        valid_names=[f"turn{validation_label}"],
         feval=stable_ndcg20_eval if args.stable_tie_validation else None,
         callbacks=[
             lgb.early_stopping(args.early_stopping_rounds),
@@ -475,7 +572,8 @@ def train_variant(
             "groups": len(train_data.groups),
             "rows": int(len(train_data.labels)),
         },
-        "turn8_validation": {
+        "validation": {
+            "turns": sorted(validation_turns),
             "groups": len(valid_data.groups),
             "rows": int(len(valid_data.labels)),
         },
@@ -573,6 +671,8 @@ if __name__ == "__main__":
     parser.add_argument("--early_stopping_rounds", type=int, default=40)
     parser.add_argument("--eval_at", nargs="+", type=int, default=[1, 5, 20])
     parser.add_argument("--max_train_candidates", type=int, default=None)
+    parser.add_argument("--train_turns", nargs="+", type=int, default=None)
+    parser.add_argument("--validation_turns", nargs="+", type=int, default=[8])
     parser.add_argument(
         "--stable_tie_validation",
         action=argparse.BooleanOptionalAction,

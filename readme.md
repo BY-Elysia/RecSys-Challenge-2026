@@ -28,9 +28,10 @@ composite_score     0.6373
 v3 调整 Top2-20 会使 `nDCG@20` 降至 `0.5518`，仅调整 Top6-20 则与冠军完全同分。
 因此 v3/seed 融合路线已经停止，下一阶段转向增加文本语义召回与 CF 召回等互补信号。
 
-最新研究候选已增加用户 CF 直接召回和历史歌曲 CF 相似召回。该模型在完整 Dev 上将
-Blind 轮次加权 `nDCG@20` 从 `0.1918` 提升到 `0.2269`，但尚未获得 Blind A
-官方分数，因此当前正式冠军仍保持不变。
+CF、显式约束和 Top200 后排替换均已通过官方分数判定为无收益。最新研究候选改为
+监督式 Query-to-track 稠密召回：冻结 Qwen3 基础向量，只训练轻量 Query adapter，
+并仅把它用于召回缺口最大的 Turn1。该候选尚未获得 Blind A 官方分数，因此当前
+正式冠军仍保持不变。
 
 完整分数历史、失败方向、保留产物和复现记录见
 [EXPERIMENTS.md](EXPERIMENTS.md)。
@@ -113,6 +114,55 @@ $env:DOUBAO_CONCURRENCY = "4"
 
 ```powershell
 .\.venv\Scripts\python.exe -c "import zipfile,pathlib; d=pathlib.Path('exp/inference/blindset_A'); dst=d/'multichannel_ltr_turn1_s13_later_v2_top1lock_submission.zip'; dst.unlink(missing_ok=True); z=zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED); z.write(d/'multichannel_ltr_turn1_s13_later_v2_top1lock_prediction.json','prediction.json'); z.close(); print(dst.resolve())"
+```
+
+## 监督稠密召回候选
+
+训练轻量 Query adapter。Qwen3 编码器和歌曲向量保持冻结：
+
+```powershell
+.\.venv\Scripts\python.exe train_supervised_dense_retriever.py `
+  --output_dir exp/dense/supervised_qwen_query_adapter_10k_lr1e5_inbatch005 `
+  --learning_rate 1e-5 `
+  --in_batch_weight 0.05 `
+  --alignment_weight 1.0 `
+  --epochs 4 `
+  --device cuda
+```
+
+生成监督稠密 Turn1 专家候选，Turn2+ 继续使用 v2：
+
+```powershell
+.\.venv\Scripts\python.exe run_inference_ltr_blindset.py `
+  --tid bm25_tags_doubao_blindset_A `
+  --model_path exp/ltr/cached_ablation_10k_top100/no_metadata_cf_popularity/model.txt `
+  --turn1_model_path exp/ltr/supervised_dense_turn12_train/legacy_plus_supervised_dense_rank/model.txt `
+  --output_name multichannel_ltr_turn1_supervised_dense_later_v2_empty `
+  --channel_topk 100 `
+  --history_turns 0 `
+  --enable_supervised_dense `
+  --supervised_dense_checkpoint exp/dense/supervised_qwen_query_adapter_10k_lr1e5_inbatch005 `
+  --supervised_dense_query_batch_size 16 `
+  --no-enable_query_dense `
+  --no-enable_cf_retrieval `
+  --embedding_batch_size 64 `
+  --device cuda
+```
+
+锁定正式冠军 Top1 和回复：
+
+```powershell
+.\.venv\Scripts\python.exe merge_locked_top1_prediction.py `
+  --base_path exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_top1lock_prediction.json `
+  --candidate_path exp/inference/blindset_A/multichannel_ltr_turn1_supervised_dense_later_v2_empty.json `
+  --output_path exp/inference/blindset_A/multichannel_ltr_turn1_supervised_dense_later_v2_top1lock_prediction.json `
+  --lock_prefix 1
+```
+
+打包：
+
+```powershell
+.\.venv\Scripts\python.exe -c "import zipfile,pathlib; d=pathlib.Path('exp/inference/blindset_A'); dst=d/'multichannel_ltr_turn1_supervised_dense_later_v2_top1lock_submission.zip'; dst.unlink(missing_ok=True); z=zipfile.ZipFile(dst,'w',zipfile.ZIP_DEFLATED); z.write(d/'multichannel_ltr_turn1_supervised_dense_later_v2_top1lock_prediction.json','prediction.json'); z.close(); print(dst.resolve())"
 ```
 
 ## CF 召回增强实验

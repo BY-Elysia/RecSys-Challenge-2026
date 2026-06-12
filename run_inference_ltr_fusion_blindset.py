@@ -159,10 +159,20 @@ if __name__ == "__main__":
     parser.add_argument("--history_turns", type=int, default=0)
     parser.add_argument("--enable_query_dense", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--enable_cf_retrieval", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--enable_supervised_dense",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--query_dense_embedding_field", default="metadata-qwen3_embedding_0.6b")
     parser.add_argument("--query_dense_model_name", default="Qwen/Qwen3-Embedding-0.6B")
     parser.add_argument("--query_dense_max_length", type=int, default=512)
     parser.add_argument("--query_dense_batch_size", type=int, default=16)
     parser.add_argument("--query_dense_instruction", default=DEFAULT_TASK_INSTRUCTION)
+    parser.add_argument(
+        "--supervised_dense_checkpoint",
+        default="exp/dense/supervised_qwen_adapter_10k_feedback",
+    )
+    parser.add_argument("--supervised_dense_query_batch_size", type=int, default=16)
     parser.add_argument("--device", default="cuda")
     main(parser.parse_args())

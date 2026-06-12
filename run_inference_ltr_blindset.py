@@ -147,10 +147,6 @@ def main(args) -> None:
             if turn1_model.best_iteration > 0
             else turn1_model.current_iteration()
         )
-        if turn1_model.feature_name() != model.feature_name():
-            raise RuntimeError("Turn 1 and later-turn models use different feature sets.")
-        if load_removed_channels(args.turn1_model_path) != load_removed_channels(args.model_path):
-            raise RuntimeError("Turn 1 and later-turn models remove different retrieval channels.")
 
     bm25 = BM25_MODEL(
         config.item_db_name,
@@ -201,20 +197,46 @@ def main(args) -> None:
         model_features,
         num_iteration=best_iteration,
     )
-    turn1_predictions = (
-        turn1_model.predict(model_features, num_iteration=turn1_iteration)
-        if turn1_model is not None
-        else None
-    )
+    turn1_removed_channels = None
+    turn1_model_features = None
+    turn1_candidates_by_task = None
+    turn1_groups = None
+    turn1_predictions = None
+    if turn1_model is not None:
+        turn1_removed_channels = load_removed_channels(args.turn1_model_path)
+        turn1_model_features, turn1_candidates_by_task, turn1_groups = (
+            prepare_model_inputs(
+                inference,
+                turn1_model.feature_name(),
+                turn1_removed_channels,
+            )
+        )
+        turn1_predictions = turn1_model.predict(
+            turn1_model_features,
+            num_iteration=turn1_iteration,
+        )
+
     results = []
     offset = 0
-    for task, candidates, group_size in zip(tasks, candidates_by_task, groups):
-        source_predictions = (
-            turn1_predictions
-            if task.turn_number == 1 and turn1_predictions is not None
-            else predictions
-        )
-        group_scores = source_predictions[offset:offset + group_size]
+    turn1_offset = 0
+    for task_index, task in enumerate(tasks):
+        candidates = candidates_by_task[task_index]
+        group_size = groups[task_index]
+        group_scores = predictions[offset:offset + group_size]
+        offset += group_size
+
+        if turn1_predictions is not None:
+            turn1_candidates = turn1_candidates_by_task[task_index]
+            turn1_group_size = turn1_groups[task_index]
+            turn1_group_scores = turn1_predictions[
+                turn1_offset:turn1_offset + turn1_group_size
+            ]
+            turn1_offset += turn1_group_size
+            if task.turn_number == 1:
+                candidates = turn1_candidates
+                group_size = turn1_group_size
+                group_scores = turn1_group_scores
+
         order = np.argsort(-group_scores, kind="stable")
         ranked = [candidates[index] for index in order[:args.topk]]
         if len(ranked) != args.topk:
@@ -228,7 +250,16 @@ def main(args) -> None:
             "predicted_track_ids": ranked,
             "predicted_response": "",
         })
-        offset += group_size
+
+    if offset != len(predictions):
+        raise RuntimeError(
+            f"Consumed {offset} later-turn predictions, expected {len(predictions)}."
+        )
+    if turn1_predictions is not None and turn1_offset != len(turn1_predictions):
+        raise RuntimeError(
+            f"Consumed {turn1_offset} Turn 1 predictions, "
+            f"expected {len(turn1_predictions)}."
+        )
 
     output_dir = os.path.join("exp", "inference", args.eval_dataset)
     os.makedirs(output_dir, exist_ok=True)
@@ -243,6 +274,17 @@ def main(args) -> None:
         "model_iteration": best_iteration,
         "turn1_model_path": args.turn1_model_path,
         "turn1_model_iteration": turn1_iteration,
+        "turn1_features": (
+            int(turn1_model_features.shape[1])
+            if turn1_model_features is not None
+            else None
+        ),
+        "turn1_candidate_rows": (
+            int(turn1_model_features.shape[0])
+            if turn1_model_features is not None
+            else None
+        ),
+        "turn1_removed_channels": turn1_removed_channels,
         "output_path": output_path,
     }, indent=2))
 
@@ -277,6 +319,11 @@ if __name__ == "__main__":
         default=False,
     )
     parser.add_argument(
+        "--enable_supervised_dense",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
         "--query_dense_embedding_field",
         default="metadata-qwen3_embedding_0.6b",
     )
@@ -284,6 +331,11 @@ if __name__ == "__main__":
     parser.add_argument("--query_dense_max_length", type=int, default=512)
     parser.add_argument("--query_dense_batch_size", type=int, default=16)
     parser.add_argument("--query_dense_instruction", default=DEFAULT_TASK_INSTRUCTION)
+    parser.add_argument(
+        "--supervised_dense_checkpoint",
+        default="exp/dense/supervised_qwen_adapter_10k_feedback",
+    )
+    parser.add_argument("--supervised_dense_query_batch_size", type=int, default=16)
     parser.add_argument("--history_turns", type=int, default=0)
     parser.add_argument("--rrf_k", type=int, default=60)
     parser.add_argument("--topk", type=int, default=20)
