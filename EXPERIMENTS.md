@@ -10,32 +10,33 @@
 legacy BM25 + feedback-rich BM25
   -> 同歌手/同专辑结构召回
   -> image SigLIP2 历史歌曲相似召回
-  -> 36 维候选特征
-  -> LightGBM LambdaRank v2
-  -> Turn1 使用 30k seed13 调整 Top2-20
-  -> 锁定 v2 Top1 和现有豆包回复
+  -> 冻结 Qwen3 + 监督 Query adapter 补充 Turn1 候选
+  -> Turn1 监督稠密 LambdaRank 专家调整 Top2-20
+  -> Turn2+ 使用 36 维 LightGBM LambdaRank v2
+  -> 锁定旧冠军 Top1 和现有豆包回复
 ```
 
 Blind A 当前正式冠军：
 
 | 指标 | 分数 |
 |---|---:|
-| ndcg@20 | **0.5566** |
-| catalog_diversity | 0.0307 |
+| ndcg@20 | **0.5575** |
+| catalog_diversity | **0.0310** |
 | lexical_diversity | 0.7465 |
 | llm_judge_score | **4.7500** |
-| composite_score | **0.6373** |
+| composite_score | **0.6377** |
 
 当前保留的标准产物：
 
 ```text
 exp/ltr/cached_ablation_10k_top100/no_metadata_cf_popularity/model.txt
-exp/ltr/lean_30k_top100_seed13/no_metadata_cf_popularity/model.txt
-exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_top1lock_prediction.json
-exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_top1lock_submission.zip
+exp/dense/supervised_qwen_query_adapter_10k_lr1e5_inbatch005/
+exp/ltr/supervised_dense_turn12_train/legacy_plus_supervised_dense_rank/model.txt
+exp/inference/blindset_A/multichannel_ltr_turn1_supervised_dense_later_v2_top1lock_prediction.json
+exp/inference/blindset_A/multichannel_ltr_turn1_supervised_dense_later_v2_top1lock_submission.zip
 ```
 
-2026-06-12 新生成的监督稠密 Turn1 候选尚未取得官方分数，因此不能替换上述冠军。
+监督稠密 Turn1 候选已取得官方正收益，并于 2026-06-12 晋升为正式冠军。
 
 ## 分数历史
 
@@ -58,6 +59,7 @@ exp/inference/blindset_A/multichannel_ltr_turn1_s13_later_v2_top1lock_submission
 | 标签 Top-400 + 模型困难负例训练 1 轮 | 0.1823 | 0.0316 | 0.7378 | 4.4000 | Dev 提升但 Blind A 退化，综合分 0.4231 |
 | 混合负例训练 + Dense Hybrid 候选 | 0.1806 | 0.0316 | 0.7369 | **4.8500** | 综合分 **0.4559** 创新高，但排序明显退化 |
 | 混合负例训练 + 纯 BM25 Top-400 对照 | 0.1806 | 0.0316 | 0.7369 | **4.8500** | 与 Dense Hybrid 五项显示分数一致，退化来自混合训练模型 |
+| 监督稠密 Turn1 专家 + v2 Turn2+ | **0.5575** | **0.0310** | 0.7465 | **4.7500** | 当前正式冠军，综合分 **0.6377** |
 
 ## 有效改进
 
@@ -2701,7 +2703,7 @@ exp/ltr/supervised_dense_turn12_train/legacy_plus_supervised_dense_rank/model.tx
 本地变化 = +0.001261
 ```
 
-### 新待评测候选
+### Blind A 正式结果
 
 Blind 推理脚本现支持 Turn1 模型和后续模型使用不同特征集合与不同候选行数。
 新候选严格保持正式冠军的 Top1、Turn2+ 排序和全部自然语言回复，只调整 20 条
@@ -2729,5 +2731,16 @@ MinTop20OverlapOnChangedRows      6 / 20
 zip entries                       ["prediction.json"]
 ```
 
-该候选尚未取得官方分数。正式冠军仍为 `nDCG@20=0.5566`、
-`composite_score=0.6373`。
+官方结果：
+
+| 指标 | 监督稠密 Turn1 | 旧冠军 | 变化 |
+|---|---:|---:|---:|
+| nDCG@20 | **0.5575** | 0.5566 | **+0.0009** |
+| catalog_diversity | **0.0310** | 0.0307 | **+0.0003** |
+| lexical_diversity | 0.7465 | 0.7465 | 0.0000 |
+| llm_judge_score | 4.7500 | 4.7500 | 0.0000 |
+| composite_score | **0.6377** | 0.6373 | **+0.0004** |
+
+该候选正式晋升为当前冠军。本地稳定排序预测的方向与官方结果一致：
+只在召回缺口最大的 Turn1 引入监督稠密候选，可以小幅提升相关性和目录覆盖，
+同时锁定 Top1 与回复，避免损害 LLM Judge 和词汇多样性。
